@@ -247,10 +247,7 @@
       <div class="card">
         <div class="csv-hint">
           <span style="font-size:13px;color:var(--muted);flex:1">Add rows below or</span>
-          <button class="btn btn-sm" onclick="loadExample()">Load example</button>
-          <button class="btn btn-sm" onclick="document.getElementById('csvFile').click()">Import CSV</button>
           <button class="btn btn-sm" onclick="toggleMrtArea()">Import MRT</button>
-          <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="handleCsv(event)" />
         </div>
         <div id="mrtArea" style="display:none;margin-top:8px">
           <textarea id="mrtInput" rows="5" placeholder="Paste MRT note here…" style="width:100%;font-size:11px;font-family:monospace;resize:vertical"></textarea>
@@ -259,7 +256,6 @@
             <button class="btn btn-sm" onclick="toggleMrtArea()">Cancel</button>
           </div>
         </div>
-        <p class="hint" style="margin-bottom:10px">CSV format: <code style="color:var(--accent)">time, player, spell</code></p>
         <table id="assignTable">
           <thead><tr>
             <th>Time</th><th>Player</th><th>Spell</th><th></th>
@@ -310,6 +306,8 @@
   let fights = [];
   let selectedFight = null;
   let assignments = [];
+  try { assignments = JSON.parse(localStorage.getItem('cd-checker-assignments') || '[]'); } catch(_) {}
+  renderAssignments();
 
   document.getElementById('tolerance').addEventListener('input', function() {
     document.getElementById('tolHint').textContent = this.value;
@@ -404,42 +402,18 @@
     if (!t || !p || !s) return;
     assignments.push({ time: t, player: p, spell: s });
     renderAssignments();
+    saveAssignments();
     ['newTime','newPlayer','newSpell'].forEach(id => document.getElementById(id).value = '');
   }
 
   function removeRow(i) {
     assignments.splice(i, 1);
     renderAssignments();
+    saveAssignments();
   }
 
-  function loadExample() {
-    assignments = [
-      { time: '0:30', player: 'Healadin', spell: 'Aura Mastery' },
-      { time: '1:30', player: 'Druidheal', spell: 'Tranquility' },
-      { time: '2:00', player: 'Healadin', spell: 'Divine Toll' },
-      { time: '3:00', player: 'Shamanheal', spell: 'Healing Tide Totem' },
-      { time: '3:45', player: 'Druidheal', spell: 'Convoke the Spirits' },
-    ];
-    renderAssignments();
-  }
-
-  function handleCsv(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const lines = ev.target.result.split('\n').filter(l => l.trim());
-      const parsed = [];
-      lines.forEach(line => {
-        const parts = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-        if (parts.length >= 3 && parts[0].toLowerCase() !== 'time') {
-          parsed.push({ time: parts[0], player: parts[1], spell: parts[2] });
-        }
-      });
-      if (parsed.length) { assignments = parsed; renderAssignments(); }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+  function saveAssignments() {
+    localStorage.setItem('cd-checker-assignments', JSON.stringify(assignments));
   }
 
   function escHtml(str) {
@@ -485,6 +459,7 @@
     if (!parsed.length) return;
     assignments = parsed;
     renderAssignments();
+    saveAssignments();
     document.getElementById('mrtArea').style.display = 'none';
     document.getElementById('mrtInput').value = '';
   }
