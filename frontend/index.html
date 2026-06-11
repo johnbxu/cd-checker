@@ -296,7 +296,7 @@
 <script>
   // ─── CONFIG ────────────────────────────────────────────────────────────────
   // Replace this with your deployed Worker URL after running `wrangler deploy`
-  const WORKER_URL = "https://wcl-cooldown-checker.johnbxu.workers.dev";
+  const WORKER_URL = "https://cd-checker.johnbxu.workers.dev";
   // ───────────────────────────────────────────────────────────────────────────
 
   let fights = [];
@@ -458,11 +458,15 @@
       const castData = await wcl(
         `query($code:String!,$start:Float!,$end:Float!){
           reportData{report(code:$code){
+            masterData{ actors{ id name } }
             events(dataType:Casts,startTime:$start,endTime:$end,limit:10000){data}
           }}
         }`,
         { code, start: fight.startTime, end: fight.endTime }
       );
+
+      const actors = castData.reportData.report.masterData?.actors || [];
+      const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
 
       const rawEvents = castData.reportData.report.events.data || [];
       const fightStart = fight.startTime;
@@ -474,7 +478,7 @@
         .map(ev => ({
           time: ev.timestamp - fightStart,
           ability: ev.ability?.name || 'Unknown',
-          source: ev.source?.name || 'Unknown'
+          source: actorMap[ev.sourceID] || 'Unknown'
         }));
 
       const results = assignments.map(assign => {
