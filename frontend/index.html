@@ -249,7 +249,15 @@
           <span style="font-size:13px;color:var(--muted);flex:1">Add rows below or</span>
           <button class="btn btn-sm" onclick="loadExample()">Load example</button>
           <button class="btn btn-sm" onclick="document.getElementById('csvFile').click()">Import CSV</button>
+          <button class="btn btn-sm" onclick="toggleMrtArea()">Import MRT</button>
           <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="handleCsv(event)" />
+        </div>
+        <div id="mrtArea" style="display:none;margin-top:8px">
+          <textarea id="mrtInput" rows="5" placeholder="Paste MRT note here…" style="width:100%;font-size:11px;font-family:monospace;resize:vertical"></textarea>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="btn btn-sm btn-accent" style="flex:1" onclick="importMrt()">Parse note</button>
+            <button class="btn btn-sm" onclick="toggleMrtArea()">Cancel</button>
+          </div>
         </div>
         <p class="hint" style="margin-bottom:10px">CSV format: <code style="color:var(--accent)">time, player, spell</code></p>
         <table id="assignTable">
@@ -381,7 +389,9 @@
     tbody.innerHTML = '';
     assignments.forEach((a, i) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${a.time}</td><td>${a.player}</td><td>${a.spell}</td>
+      const timeDisplay = a.phase !== undefined ? `p${a.phase}+${a.time}s` : a.time;
+      const spellDisplay = a.spellId ? (a.spell || `ID:${a.spellId}`) : (a.spell || '');
+      tr.innerHTML = `<td>${escHtml(String(timeDisplay))}</td><td>${escHtml(a.player)}</td><td>${escHtml(spellDisplay)}</td>
         <td><button class="del-btn" onclick="removeRow(${i})">×</button></td>`;
       tbody.appendChild(tr);
     });
@@ -432,6 +442,53 @@
     e.target.value = '';
   }
 
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function toggleMrtArea() {
+    const area = document.getElementById('mrtArea');
+    area.style.display = area.style.display === 'none' ? 'block' : 'none';
+  }
+
+  function parseMrtNote(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const result = [];
+    for (const line of lines) {
+      if (line.startsWith('EncounterID:') || line.startsWith('#')) continue;
+      const props = {};
+      line.split(';').forEach(part => {
+        const idx = part.indexOf(':');
+        if (idx > 0) props[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+      });
+      if (!props.tag || !props.spellid || props.time === undefined || !props.ph) continue;
+      if (props.tag === 'everyone') continue;
+      result.push({
+        phase: parseInt(props.ph),
+        time: parseInt(props.time),
+        player: props.tag,
+        spellId: parseInt(props.spellid),
+        spell: '',
+      });
+    }
+    return result;
+  }
+
+  function importMrt() {
+    const text = document.getElementById('mrtInput').value.trim();
+    if (!text) return;
+    const parsed = parseMrtNote(text);
+    if (!parsed.length) return;
+    assignments = parsed;
+    renderAssignments();
+    document.getElementById('mrtArea').style.display = 'none';
+    document.getElementById('mrtInput').value = '';
+  }
+
   // Main analysis
   async function runCheck() {
     const main = document.getElementById('mainArea');
@@ -459,6 +516,7 @@
         `query($code:String!,$start:Float!,$end:Float!){
           reportData{report(code:$code){
             masterData{ actors{ id name } }
+            fights(killType:Kills){ id phaseTransitions { id startTime } }
             events(dataType:Casts,startTime:$start,endTime:$end,limit:10000){data}
           }}
         }`,
@@ -468,37 +526,64 @@
       const actors = castData.reportData.report.masterData?.actors || [];
       const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
 
+      // Build phase start map (fight-relative ms); phase 1 always starts at 0
+      const fightMeta = (castData.reportData.report.fights || []).find(f => f.id === fight.id);
+      const phaseStartMap = { 1: 0 };
+      (fightMeta?.phaseTransitions || []).forEach(pt => {
+        phaseStartMap[pt.id] = pt.startTime - fight.startTime;
+      });
+
       const rawEvents = castData.reportData.report.events.data || [];
       const fightStart = fight.startTime;
       const fightDur = fight.endTime - fight.startTime;
 
-      const spellNames = [...new Set(assignments.map(a => a.spell.toLowerCase()))];
+      // Build spell ID → name map from events
+      const spellIdToName = {};
+      rawEvents.forEach(ev => {
+        if (ev.abilityGameID && ev.ability?.name) spellIdToName[ev.abilityGameID] = ev.ability.name;
+      });
+
+      // Filter to relevant casts (by spell ID for MRT assignments, by name for manual)
+      const assignSpellIds = new Set(assignments.filter(a => a.spellId).map(a => a.spellId));
+      const assignSpellNames = [...new Set(assignments.filter(a => a.spell && !a.spellId).map(a => a.spell.toLowerCase()))];
       const relevantCasts = rawEvents
-        .filter(ev => spellNames.some(s => (ev.ability?.name || '').toLowerCase().includes(s)))
+        .filter(ev =>
+          (assignSpellIds.size && assignSpellIds.has(ev.abilityGameID)) ||
+          assignSpellNames.some(s => (ev.ability?.name || '').toLowerCase().includes(s))
+        )
         .map(ev => ({
           time: ev.timestamp - fightStart,
           ability: ev.ability?.name || 'Unknown',
+          abilityId: ev.abilityGameID,
           source: actorMap[ev.sourceID] || 'Unknown'
         }));
 
       const results = assignments.map(assign => {
-        const assignedMs = parseTime(assign.time) * 1000;
+        const assignedMs = assign.phase !== undefined
+          ? (phaseStartMap[assign.phase] ?? 0) + assign.time * 1000
+          : parseTime(String(assign.time)) * 1000;
+
         const matching = relevantCasts.filter(c =>
           c.source.toLowerCase().includes(assign.player.toLowerCase()) &&
-          c.ability.toLowerCase().includes(assign.spell.toLowerCase())
+          (assign.spellId
+            ? c.abilityId === assign.spellId
+            : c.ability.toLowerCase().includes((assign.spell || '').toLowerCase()))
         );
-        if (!matching.length) return { assign, status: 'missed', actual: null, delta: null, assignedMs };
+
+        const resolvedName = assign.spellId ? spellIdToName[assign.spellId] : null;
+        if (!matching.length) return { assign, status: 'missed', actual: null, delta: null, assignedMs, spellName: resolvedName };
         const closest = matching.reduce((best, c) =>
           Math.abs(c.time - assignedMs) < Math.abs(best.time - assignedMs) ? c : best
         );
         const delta = closest.time - assignedMs;
         const status = Math.abs(delta) <= tolerance ? 'ok' : delta > 0 ? 'late' : 'early';
-        return { assign, status, actual: closest, delta, assignedMs };
+        return { assign, status, actual: closest, delta, assignedMs,
+          spellName: closest.ability !== 'Unknown' ? closest.ability : resolvedName };
       });
 
       renderResults(results, fight, fightDur, tolerance);
     } catch(e) {
-      main.innerHTML = `<div class="error-box">⚠ ${e.message}</div>`;
+      main.innerHTML = `<div class="error-box">⚠ ${escHtml(e.message)}</div>`;
     }
   }
 
@@ -530,9 +615,9 @@
       return `
         <div class="result-item">
           <div class="result-row">
-            <span style="color:var(--muted)">${r.assign.time}</span>
-            <span>${r.assign.player}</span>
-            <span>${r.assign.spell}</span>
+            <span style="color:var(--muted)">${r.assign.phase !== undefined ? `p${r.assign.phase}+${r.assign.time}s` : r.assign.time}</span>
+            <span>${escHtml(r.assign.player)}</span>
+            <span>${escHtml(r.spellName || r.assign.spell || (r.assign.spellId ? `ID:${r.assign.spellId}` : '—'))}</span>
             <span style="color:var(--muted)">${r.actual ? fmtTime(r.actual.time) : '—'}</span>
             <span><span class="badge ${badges[r.status]}">${labels[r.status](r)}</span></span>
           </div>
@@ -542,7 +627,7 @@
 
     document.getElementById('mainArea').innerHTML = `
       <div class="fight-title">
-        ${fight.name}
+        ${escHtml(fight.name)}
         <span class="dur">${fmtTime(fight.endTime - fight.startTime)}</span>
       </div>
       <div class="summary-grid">
