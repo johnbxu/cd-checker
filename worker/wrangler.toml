@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # DO NOT commit real credentials to this file.
 
 [vars]
-ALLOWED_ORIGIN = "https://cd-checker.pages.dev"
+ALLOWED_ORIGIN = "https://cd-checker.johnbxu.workers.dev"
 
 # To add secrets via CLI:
 #   wrangler secret put WCL_CLIENT_ID
