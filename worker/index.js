@@ -80,6 +80,8 @@ export default {
 
     // Only accept POST to /api/wcl
     if (url.pathname !== "/api/wcl" || request.method !== "POST") {
+      // Serve static frontend assets for all non-API routes
+      if (env.ASSETS) return env.ASSETS.fetch(request);
       return new Response(JSON.stringify({ error: "Not found" }), {
         status: 404,
         headers: { ...cors, "Content-Type": "application/json" },

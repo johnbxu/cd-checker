@@ -7,6 +7,10 @@ compatibility_flags = ["nodejs_compat"]
 # or use `wrangler secret put WCL_CLIENT_ID` / `wrangler secret put WCL_CLIENT_SECRET`
 # DO NOT commit real credentials to this file.
 
+[assets]
+directory = "../frontend"
+binding = "ASSETS"
+
 [vars]
 ALLOWED_ORIGIN = "https://cd-checker.johnbxu.workers.dev"
 
