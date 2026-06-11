@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # DO NOT commit real credentials to this file.
 
 [vars]
-ALLOWED_ORIGIN = "https://99cad215.wcl-cooldown-checker.pages.dev"
+ALLOWED_ORIGIN = "https://wcl-cooldown-checker.pages.dev"
 
 # To add secrets via CLI:
 #   wrangler secret put WCL_CLIENT_ID
