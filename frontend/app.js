@@ -274,17 +274,32 @@ async function runCheck() {
       source: actorMap[ev.sourceID] || 'Unknown'
     }));
 
+    // Pre-compute each phase's time window [start, end) so casts can't bleed across phases
+    const sortedPhaseIds = Object.keys(phaseStartMap).map(Number).sort((a, b) => phaseStartMap[a] - phaseStartMap[b]);
+    const phaseWindows = {};
+    sortedPhaseIds.forEach((id, i) => {
+      phaseWindows[id] = {
+        start: phaseStartMap[id],
+        end: i + 1 < sortedPhaseIds.length ? phaseStartMap[sortedPhaseIds[i + 1]] : fightDur
+      };
+    });
+
     const results = activeAssignments.map(assign => {
       const assignedMs = assign.phase !== undefined
         ? (phaseStartMap[assign.phase] ?? 0) + assign.time * 1000
         : parseTime(String(assign.time)) * 1000;
 
-      const matching = relevantCasts.filter(c =>
-        c.source.toLowerCase().includes(assign.player.toLowerCase()) &&
-        (assign.spellId
+      const window = assign.phase !== undefined ? phaseWindows[assign.phase] : null;
+      const matching = relevantCasts.filter(c => {
+        if (!c.source.toLowerCase().includes(assign.player.toLowerCase())) return false;
+        const spellMatch = assign.spellId
           ? c.abilityId === assign.spellId
-          : c.ability.toLowerCase().includes((assign.spell || '').toLowerCase()))
-      );
+          : c.ability.toLowerCase().includes((assign.spell || '').toLowerCase());
+        if (!spellMatch) return false;
+        // Restrict to the phase's time window so same-spell casts from other phases don't match
+        if (window && (c.time < window.start || c.time >= window.end)) return false;
+        return true;
+      });
 
       const resolvedName = assign.spellId ? spellIdToName[assign.spellId] : null;
       if (!matching.length) return { assign, status: 'missed', actual: null, delta: null, assignedMs, spellName: resolvedName };
