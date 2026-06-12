@@ -101,7 +101,7 @@ export default {
 
       const token = await getToken(env);
 
-      const wclResp = await fetch(WCL_API_URL, {
+      const wclFetch = () => fetch(WCL_API_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -109,6 +109,14 @@ export default {
         },
         body: JSON.stringify({ query, variables }),
       });
+
+      let wclResp = await wclFetch();
+
+      // Retry once after a short delay if rate limited
+      if (wclResp.status === 429) {
+        await new Promise(r => setTimeout(r, 3000));
+        wclResp = await wclFetch();
+      }
 
       const data = await wclResp.json();
 
