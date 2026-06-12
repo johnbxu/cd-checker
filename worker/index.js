@@ -23,14 +23,15 @@ async function getToken(env) {
     return cachedToken;
   }
 
+  const credentials = btoa(`${env.WCL_CLIENT_ID}:${env.WCL_CLIENT_SECRET}`);
   const resp = await fetch(WCL_TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: env.WCL_CLIENT_ID,
-      client_secret: env.WCL_CLIENT_SECRET,
-    }),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": `Basic ${credentials}`,
+      "User-Agent": "WCL-Cooldown-Checker/1.0",
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
   });
 
   if (!resp.ok) {
@@ -106,6 +107,7 @@ export default {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
+          "User-Agent": "WCL-Cooldown-Checker/1.0",
         },
         body: JSON.stringify({ query, variables }),
       });
