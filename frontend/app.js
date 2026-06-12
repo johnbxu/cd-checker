@@ -28,6 +28,33 @@ function fmtTime(ms) {
   return m + ':' + String(s % 60).padStart(2, '0');
 }
 
+function normalizePhaseId(value) {
+  const raw = value && typeof value === 'object' ? value.id : value;
+  const phase = Number(raw);
+  return Number.isFinite(phase) && phase > 0 ? phase : null;
+}
+
+function assignmentPhaseId(assign) {
+  if (assign.phase === undefined || assign.phase === null || assign.phase === '') return null;
+  return normalizePhaseId(assign.phase);
+}
+
+function eventPhaseId(ev) {
+  return normalizePhaseId(ev.phase ?? ev.phaseID ?? ev.phaseId ?? ev.phase_id);
+}
+
+function eventFightId(ev) {
+  const fight = Number(ev.fight);
+  return Number.isFinite(fight) ? fight : null;
+}
+
+function phaseAtTime(ms, phaseWindows) {
+  const match = Object.entries(phaseWindows).find(([, window]) =>
+    ms >= window.start && ms < window.end
+  );
+  return match ? Number(match[0]) : null;
+}
+
 function extractCode(url) {
   const m = url.match(/reports\/([A-Za-z0-9]+)/);
   if (!m) throw new Error('Could not find a report code in that URL.');
@@ -266,14 +293,6 @@ async function runCheck() {
     const fightStart = fight.startTime;
     const fightDur = fight.endTime - fight.startTime;
 
-    // Server already filtered to assigned spell IDs; just map to working format
-    const relevantCasts = rawEvents.map(ev => ({
-      time: ev.timestamp - fightStart,
-      ability: spellIdToName[ev.abilityGameID] || '',
-      abilityId: ev.abilityGameID,
-      source: actorMap[ev.sourceID] || 'Unknown'
-    }));
-
     // Pre-compute each phase's time window [start, end) so casts can't bleed across phases
     const sortedPhaseIds = Object.keys(phaseStartMap).map(Number).sort((a, b) => phaseStartMap[a] - phaseStartMap[b]);
     const phaseWindows = {};
@@ -284,33 +303,60 @@ async function runCheck() {
       };
     });
 
-    const results = activeAssignments.map(assign => {
-      const assignedMs = assign.phase !== undefined
-        ? (phaseStartMap[assign.phase] ?? 0) + assign.time * 1000
-        : parseTime(String(assign.time)) * 1000;
-
-      const window = assign.phase !== undefined ? phaseWindows[assign.phase] : null;
-      const matching = relevantCasts.filter(c => {
-        if (!c.source.toLowerCase().includes(assign.player.toLowerCase())) return false;
-        const spellMatch = assign.spellId
-          ? c.abilityId === assign.spellId
-          : c.ability.toLowerCase().includes((assign.spell || '').toLowerCase());
-        if (!spellMatch) return false;
-        // Restrict to the phase's time window so same-spell casts from other phases don't match
-        if (window && (c.time < window.start || c.time >= window.end)) return false;
-        return true;
+    // WCL cast events usually do not include phase, so derive it from their report timestamp.
+    const relevantCasts = rawEvents
+      .filter(ev => eventFightId(ev) === null || eventFightId(ev) === fight.id)
+      .map(ev => {
+        const time = ev.timestamp - fightStart;
+        return {
+          time,
+          phase: eventPhaseId(ev) ?? phaseAtTime(time, phaseWindows),
+          ability: spellIdToName[ev.abilityGameID] || '',
+          abilityId: ev.abilityGameID,
+          source: actorMap[ev.sourceID] || 'Unknown'
+        };
       });
 
-      const resolvedName = assign.spellId ? spellIdToName[assign.spellId] : null;
-      if (!matching.length) return { assign, status: 'missed', actual: null, delta: null, assignedMs, spellName: resolvedName };
-      const closest = matching.reduce((best, c) =>
-        Math.abs(c.time - assignedMs) < Math.abs(best.time - assignedMs) ? c : best
-      );
-      const delta = closest.time - assignedMs;
-      const status = Math.abs(delta) <= tolerance ? 'ok' : delta > 0 ? 'late' : 'early';
-      return { assign, status, actual: closest, delta, assignedMs,
-        spellName: closest.ability || resolvedName };
-    });
+    const results = activeAssignments
+      .filter(assign => {
+        const assignPhase = assignmentPhaseId(assign);
+        // Drop assignments for phases that never started in this attempt
+        if (assignPhase !== null && !(assignPhase in phaseStartMap)) return false;
+        // Drop assignments due after the fight ended (fight ended too early)
+        const ms = assignPhase !== null
+          ? phaseStartMap[assignPhase] + assign.time * 1000
+          : parseTime(String(assign.time)) * 1000;
+        return ms < fightDur;
+      })
+      .map(assign => {
+        const assignPhase = assignmentPhaseId(assign);
+        const assignedMs = assignPhase !== null
+          ? phaseStartMap[assignPhase] + assign.time * 1000
+          : parseTime(String(assign.time)) * 1000;
+
+        const window = assignPhase !== null ? phaseWindows[assignPhase] : null;
+        const matching = relevantCasts.filter(c => {
+          if (!c.source.toLowerCase().includes(assign.player.toLowerCase())) return false;
+          const spellMatch = assign.spellId
+            ? c.abilityId === assign.spellId
+            : c.ability.toLowerCase().includes((assign.spell || '').toLowerCase());
+          if (!spellMatch) return false;
+          if (assignPhase !== null && c.phase !== assignPhase) return false;
+          // Restrict to the phase's time window so same-spell casts from other phases don't match
+          if (window && (c.time < window.start || c.time >= window.end)) return false;
+          return true;
+        });
+
+        const resolvedName = assign.spellId ? spellIdToName[assign.spellId] : null;
+        if (!matching.length) return { assign, status: 'missed', actual: null, delta: null, assignedMs, spellName: resolvedName };
+        const closest = matching.reduce((best, c) =>
+          Math.abs(c.time - assignedMs) < Math.abs(best.time - assignedMs) ? c : best
+        );
+        const delta = closest.time - assignedMs;
+        const status = Math.abs(delta) <= tolerance ? 'ok' : delta > 0 ? 'late' : 'early';
+        return { assign, status, actual: closest, delta, assignedMs,
+          spellName: closest.ability || resolvedName };
+      });
 
     renderResults(results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap);
   } catch(e) {
