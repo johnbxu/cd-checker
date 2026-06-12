@@ -1,0 +1,9 @@
+[build]
+  publish   = "frontend"
+  functions = "netlify/functions"
+
+# Rewrite /api/wcl to the Netlify Function (same-origin, no CORS needed)
+[[redirects]]
+  from   = "/api/wcl"
+  to     = "/.netlify/functions/wcl"
+  status = 200
