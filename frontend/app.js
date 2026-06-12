@@ -72,7 +72,7 @@ document.getElementById('logUrl').addEventListener('change', async function() {
   try {
     const code = extractCode(url);
     const data = await wcl(
-      `query($code:String!){reportData{report(code:$code){phases{boss intermission name phases} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
+      `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
       { code }
     );
     fights = data.reportData.report.fights;
@@ -199,7 +199,7 @@ async function runCheck() {
 
     if (!selectedFight) {
       const data = await wcl(
-        `query($code:String!){reportData{report(code:$code){phases{boss intermission name phases} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
+        `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
         { code }
       );
       fights = data.reportData.report.fights;
@@ -219,9 +219,9 @@ async function runCheck() {
 
     // Phase name map for this fight's encounter (e.g. {1: {name:'Stage One', intermission:false}, ...})
     const phaseNameMap = {};
-    (reportPhases || []).filter(p => p.boss === fight.encounterID).forEach(p => {
-      (p.phases || []).forEach(id => {
-        phaseNameMap[id] = { name: p.name, intermission: !!p.intermission };
+    (reportPhases || []).filter(p => p.encounterID === fight.encounterID).forEach(p => {
+      (p.phases || []).forEach(pm => {
+        phaseNameMap[pm.id] = { name: pm.name, intermission: !!pm.isIntermission };
       });
     });
 
