@@ -332,6 +332,17 @@
     return m[1];
   }
 
+  function extractFightParam(url) {
+    try {
+      const u = new URL(url);
+      const f = u.searchParams.get('fight');
+      if (!f) return 'last';
+      if (f === 'last') return 'last';
+      const n = parseInt(f);
+      return isNaN(n) ? 'last' : n;
+    } catch { return 'last'; }
+  }
+
   async function wcl(query, variables = {}) {
     const resp = await fetch(`${WORKER_URL}/api/wcl`, {
       method: 'POST',
@@ -359,17 +370,23 @@
     try {
       const code = extractCode(url);
       const data = await wcl(
-        `query($code:String!){reportData{report(code:$code){fights(killType:Kills){id name startTime endTime}}}}`,
+        `query($code:String!){reportData{report(code:$code){fights(killType:All){id name startTime endTime}}}}`,
         { code }
       );
       fights = data.reportData.report.fights;
-      if (!fights.length) { showError('log-error', 'No kills found in this report.'); return; }
+      if (!fights.length) { showError('log-error', 'No fights found in this report.'); return; }
       const sel = document.getElementById('fightSelect');
       sel.innerHTML = fights.map(f =>
         `<option value="${f.id}">${f.name} (${fmtTime(f.endTime - f.startTime)})</option>`
       ).join('');
-      selectedFight = fights[0];
-      document.getElementById('fightHint').textContent = `${fights.length} kill(s) available`;
+      const fightParam = extractFightParam(url);
+      if (fightParam === 'last') {
+        selectedFight = fights[fights.length - 1];
+      } else {
+        selectedFight = fights.find(f => f.id === fightParam) || fights[fights.length - 1];
+      }
+      sel.value = selectedFight.id;
+      document.getElementById('fightHint').textContent = `${fights.length} fight(s) — selected: ${selectedFight.name}`;
       document.getElementById('fight-picker').style.display = 'block';
     } catch(e) {
       showError('log-error', e.message);
@@ -477,11 +494,12 @@
 
       if (!selectedFight) {
         const data = await wcl(
-          `query($code:String!){reportData{report(code:$code){fights(killType:Kills){id name startTime endTime}}}}`,
+          `query($code:String!){reportData{report(code:$code){fights(killType:All){id name startTime endTime}}}}`,
           { code }
         );
         fights = data.reportData.report.fights;
-        selectedFight = fights[0];
+        selectedFight = fights[fights.length - 1];
+        if (!selectedFight) throw new Error('No fights found in this report. Paste the URL above and select a fight first.');
       }
 
       const fight = selectedFight;
@@ -491,7 +509,7 @@
         `query($code:String!,$start:Float!,$end:Float!){
           reportData{report(code:$code){
             masterData{ actors{ id name } }
-            fights(killType:Kills){ id phaseTransitions { id startTime } }
+            fights(killType:All){ id phaseTransitions { id startTime } }
             events(dataType:Casts,startTime:$start,endTime:$end,limit:10000){data}
           }}
         }`,
