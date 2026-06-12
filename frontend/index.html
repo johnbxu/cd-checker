@@ -242,6 +242,10 @@
       </div>
     </div>
 
+    <button class="btn btn-accent btn-full" onclick="runCheck()">
+      Analyze cooldowns →
+    </button>
+
     <div>
       <div class="section-label">Assignments</div>
       <div class="card">
@@ -282,10 +286,6 @@
         <p class="hint">Cast within ±<span id="tolHint">15</span>s of assigned time = on time.</p>
       </div>
     </div>
-
-    <button class="btn btn-accent btn-full" onclick="runCheck()">
-      Analyze cooldowns →
-    </button>
 
   </aside>
 
@@ -510,7 +510,8 @@
           reportData{report(code:$code){
             masterData{ actors{ id name } }
             fights(killType:All){ id phaseTransitions { id startTime } }
-            events(dataType:Casts,startTime:$start,endTime:$end,limit:10000){data}
+            combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:100){data}
+            casts: events(dataType:Casts,startTime:$start,endTime:$end,limit:10000){data}
           }}
         }`,
         { code, start: fight.startTime, end: fight.endTime }
@@ -519,6 +520,16 @@
       const actors = castData.reportData.report.masterData?.actors || [];
       const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
 
+      // Build set of player names who are actually in this fight
+      const combatantEvents = castData.reportData.report.combatants?.data || [];
+      const fightPlayerIds = new Set(combatantEvents.map(e => e.sourceID).filter(Boolean));
+      const fightPlayerNames = new Set([...fightPlayerIds].map(id => actorMap[id]).filter(Boolean));
+
+      // Only check assignments for players present in this fight
+      const activeAssignments = assignments.filter(assign =>
+        [...fightPlayerNames].some(name => name.toLowerCase().includes(assign.player.toLowerCase()))
+      );
+
       // Build phase start map (fight-relative ms); phase 1 always starts at 0
       const fightMeta = (castData.reportData.report.fights || []).find(f => f.id === fight.id);
       const phaseStartMap = { 1: 0 };
@@ -526,7 +537,7 @@
         phaseStartMap[pt.id] = pt.startTime - fight.startTime;
       });
 
-      const rawEvents = castData.reportData.report.events.data || [];
+      const rawEvents = castData.reportData.report.casts?.data || [];
       const fightStart = fight.startTime;
       const fightDur = fight.endTime - fight.startTime;
 
@@ -537,8 +548,8 @@
       });
 
       // Filter to relevant casts (by spell ID for MRT assignments, by name for manual)
-      const assignSpellIds = new Set(assignments.filter(a => a.spellId).map(a => a.spellId));
-      const assignSpellNames = [...new Set(assignments.filter(a => a.spell && !a.spellId).map(a => a.spell.toLowerCase()))];
+      const assignSpellIds = new Set(activeAssignments.filter(a => a.spellId).map(a => a.spellId));
+      const assignSpellNames = [...new Set(activeAssignments.filter(a => a.spell && !a.spellId).map(a => a.spell.toLowerCase()))];
       const relevantCasts = rawEvents
         .filter(ev =>
           (assignSpellIds.size && assignSpellIds.has(ev.abilityGameID)) ||
@@ -551,7 +562,7 @@
           source: actorMap[ev.sourceID] || 'Unknown'
         }));
 
-      const results = assignments.map(assign => {
+      const results = activeAssignments.map(assign => {
         const assignedMs = assign.phase !== undefined
           ? (phaseStartMap[assign.phase] ?? 0) + assign.time * 1000
           : parseTime(String(assign.time)) * 1000;
