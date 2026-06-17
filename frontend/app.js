@@ -1,7 +1,4 @@
-// ─── CONFIG ────────────────────────────────────────────────────────────────
-// Replace this with your deployed Worker URL after running `wrangler deploy`
-const WORKER_URL = "";
-// ───────────────────────────────────────────────────────────────────────────
+const API_BASE_URL = "";
 
 let fights = [];
 let selectedFight = null;
@@ -9,6 +6,8 @@ let assignments = [];
 const analysisCache = new Map(); // keyed by `${code}:${fightId}:${sortedSpellIds}`
 let reportPhases = [];
 let loadedReportCode = null;
+let activeResultFilter = 'all';
+let lastRenderContext = null;
 try { assignments = JSON.parse(localStorage.getItem('cd-checker-assignments') || '[]'); } catch(_) {}
 renderAssignments();
 
@@ -63,7 +62,7 @@ function extractCode(url) {
 }
 
 async function wcl(query, variables = {}) {
-  const resp = await fetch(`${WORKER_URL}/api/wcl`, {
+  const resp = await fetch(`${API_BASE_URL}/api/wcl`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, variables })
@@ -217,6 +216,36 @@ function importMrt() {
   document.getElementById('mrtInput').value = '';
 }
 
+function setResultFilter(filter) {
+  activeResultFilter = filter;
+  if (lastRenderContext) {
+    renderResults(
+      lastRenderContext.results,
+      lastRenderContext.fight,
+      lastRenderContext.fightDur,
+      lastRenderContext.tolerance,
+      lastRenderContext.phaseNameMap,
+      lastRenderContext.phaseStartMap
+    );
+  }
+}
+
+function resultMatchesFilter(result, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'off') return result.status === 'late' || result.status === 'early';
+  return result.status === filter;
+}
+
+function filterTitle(filter) {
+  const titles = {
+    all: 'All cooldowns',
+    ok: 'On time',
+    off: 'Off timing',
+    missed: 'Missed'
+  };
+  return titles[filter] || titles.all;
+}
+
 // ─── Main analysis ──────────────────────────────────────────────────────────
 
 async function runCheck() {
@@ -355,6 +384,7 @@ async function runCheck() {
           spellName: closest.ability || resolvedName };
       });
 
+    activeResultFilter = 'all';
     renderResults(results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap);
   } catch(e) {
     document.getElementById('mainArea').innerHTML = `<div class="error-box">⚠ ${escHtml(e.message)}</div>`;
@@ -364,8 +394,11 @@ async function runCheck() {
 // ─── Render results ─────────────────────────────────────────────────────────
 
 function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, phaseStartMap = {}) {
+  lastRenderContext = { results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap };
+
   const counts = { ok: 0, late: 0, early: 0, missed: 0 };
   results.forEach(r => counts[r.status]++);
+  const visibleResults = results.filter(r => resultMatchesFilter(r, activeResultFilter));
 
   const pct = val => Math.min(100, Math.max(0, (val / fightDur) * 100)).toFixed(2);
 
@@ -376,6 +409,15 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
     early: r => `${Math.round(r.delta / 1000)}s early`,
     missed: r => 'Missed'
   };
+
+  const phaseLabelFor = r => {
+    const ph = r.assign.phase;
+    return ph !== undefined
+      ? (phaseNameMap[ph]?.name || 'P' + ph) + ' +' + r.assign.time + 's'
+      : String(r.assign.time);
+  };
+  const spellLabelFor = r => r.spellName || r.assign.spell || (r.assign.spellId ? 'ID:' + r.assign.spellId : '—');
+  const statActive = filter => activeResultFilter === filter ? ' active' : '';
 
   // Thin vertical lines on every timeline bar showing when each phase started
   const phaseMarkers = Object.entries(phaseStartMap)
@@ -388,7 +430,7 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
   // Build rows with a phase-section header injected each time the phase changes
   let rows = '';
   let lastPhase = undefined;
-  results.forEach(r => {
+  visibleResults.forEach(r => {
     const ph = r.assign.phase;
     if (ph !== undefined && ph !== lastPhase) {
       lastPhase = ph;
@@ -398,9 +440,7 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
       const timeLabel = phaseTime !== undefined ? `<span class="phase-time">${fmtTime(phaseTime)}</span>` : '';
       rows += `<div class="phase-divider${pi?.intermission ? ' intermission' : ''}">${escHtml(phaseName)}${timeLabel}</div>`;
     }
-    const phaseLabel = ph !== undefined
-      ? escHtml((phaseNameMap[ph]?.name || 'P' + ph) + ' +' + r.assign.time + 's')
-      : escHtml(String(r.assign.time));
+    const phaseLabel = escHtml(phaseLabelFor(r));
     const winL = pct(r.assignedMs - tolerance);
     const winW = pct(Math.min(r.assignedMs + tolerance, fightDur) - Math.max(r.assignedMs - tolerance, 0));
     rows += `
@@ -408,7 +448,7 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
         <div class="result-row">
           <span style="color:var(--muted)">${phaseLabel}</span>
           <span>${escHtml(r.assign.player)}</span>
-          <span>${escHtml(r.spellName || r.assign.spell || (r.assign.spellId ? 'ID:' + r.assign.spellId : '—'))}</span>
+          <span>${escHtml(spellLabelFor(r))}</span>
           <span style="color:var(--muted)">${r.actual ? fmtTime(r.actual.time) : '—'}</span>
           <span><span class="badge ${badges[r.status]}">${labels[r.status](r)}</span></span>
         </div>
@@ -420,6 +460,35 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
         </div></div>
       </div>`;
   });
+  if (!rows) {
+    rows = `<div class="result-empty">No ${escHtml(filterTitle(activeResultFilter).toLowerCase())} results.</div>`;
+  }
+
+  const focusedRows = visibleResults.map(r => `
+    <div class="filtered-row">
+      <span>${escHtml(r.assign.player)}</span>
+      <span>${escHtml(spellLabelFor(r))}</span>
+      <span>${escHtml(phaseLabelFor(r))}</span>
+      <span>${r.actual ? fmtTime(r.actual.time) : '—'}</span>
+      <span><span class="badge ${badges[r.status]}">${labels[r.status](r)}</span></span>
+    </div>
+  `).join('');
+  const focusedPanel = activeResultFilter === 'all' ? '' : `
+    <div class="filtered-panel">
+      <div class="filtered-head">
+        <div>
+          <h2>${escHtml(filterTitle(activeResultFilter))}</h2>
+          <p>${visibleResults.length} of ${results.length} cooldown assignment(s)</p>
+        </div>
+        <button class="btn btn-sm" onclick="setResultFilter('all')">Clear</button>
+      </div>
+      <div class="filtered-list">
+        <div class="filtered-header">
+          <span>Player</span><span>Spell</span><span>Assigned</span><span>Actual</span><span>Status</span>
+        </div>
+        ${focusedRows || `<div class="result-empty">No ${escHtml(filterTitle(activeResultFilter).toLowerCase())} results.</div>`}
+      </div>
+    </div>`;
 
   // Show the last phase reached in the fight header
   const maxPhaseId = Math.max(...Object.keys(phaseStartMap).map(Number));
@@ -434,11 +503,12 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
       ${phaseReachedLabel}
     </div>
     <div class="summary-grid">
-      <div class="stat stat-ok"><div class="stat-num">${counts.ok}</div><div class="stat-lbl">On time</div></div>
-      <div class="stat stat-late"><div class="stat-num">${counts.late + counts.early}</div><div class="stat-lbl">Off timing</div></div>
-      <div class="stat stat-missed"><div class="stat-num">${counts.missed}</div><div class="stat-lbl">Missed</div></div>
-      <div class="stat"><div class="stat-num">${results.length}</div><div class="stat-lbl">Total</div></div>
+      <button type="button" class="stat stat-ok${statActive('ok')}" onclick="setResultFilter('ok')" aria-pressed="${activeResultFilter === 'ok'}"><div class="stat-num">${counts.ok}</div><div class="stat-lbl">On time</div></button>
+      <button type="button" class="stat stat-late${statActive('off')}" onclick="setResultFilter('off')" aria-pressed="${activeResultFilter === 'off'}"><div class="stat-num">${counts.late + counts.early}</div><div class="stat-lbl">Off timing</div></button>
+      <button type="button" class="stat stat-missed${statActive('missed')}" onclick="setResultFilter('missed')" aria-pressed="${activeResultFilter === 'missed'}"><div class="stat-num">${counts.missed}</div><div class="stat-lbl">Missed</div></button>
+      <button type="button" class="stat${statActive('all')}" onclick="setResultFilter('all')" aria-pressed="${activeResultFilter === 'all'}"><div class="stat-num">${results.length}</div><div class="stat-lbl">Total</div></button>
     </div>
+    ${focusedPanel}
     <div class="results-table-wrap">
       <div class="results-header">
         <span>Assigned</span><span>Player</span><span>Spell</span><span>Actual</span><span>Status</span>

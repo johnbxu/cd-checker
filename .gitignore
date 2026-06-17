@@ -1,13 +1,9 @@
 # Dependencies
 node_modules/
 
-# Wrangler
-.wrangler/
-worker/.wrangler/
-
 # Secrets — never commit these
+.env
 .dev.vars
-worker/.dev.vars
 
 # OS
 .DS_Store
