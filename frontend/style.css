@@ -87,7 +87,7 @@ header .tag { font-size: 11px; color: var(--muted); background: var(--surface2);
 
 label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
 
-input[type=text], input[type=password], input[type=url], select, textarea {
+input[type=text], input[type=password], input[type=url], input[type=number], select, textarea {
   width: 100%;
   background: var(--surface2);
   border: 1px solid var(--border2);
@@ -141,6 +141,9 @@ tbody tr:last-child td { border-bottom: none; }
 .del-btn:hover { color: var(--red); }
 
 .add-row { display: grid; grid-template-columns: 70px 1fr 1fr auto; gap: 5px; align-items: center; margin-top: 8px; }
+.mechanic-preset { display: grid; gap: 3px; font-size: 13px; }
+.mechanic-preset span { color: var(--muted); font-size: 12px; }
+.cell-sub { color: var(--muted); font-size: 11px; }
 
 .tolerance-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .tolerance-row input[type=range] { flex: 1; accent-color: var(--accent); }
@@ -174,6 +177,37 @@ tbody tr:last-child td { border-bottom: none; }
 .filtered-header { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
 .filtered-row { border-bottom: 1px solid var(--border); }
 .filtered-row:last-child { border-bottom: none; }
+
+.mechanic-rule-grid { margin-top: -0.75rem; }
+.mechanic-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(380px, 1fr); gap: 12px; }
+.mechanic-head { padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.mechanic-head h2 { font-size: 13px; font-weight: 600; }
+.mechanic-head p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.mechanic-header, .mechanic-row { display: grid; grid-template-columns: 130px 130px 1fr 1fr 120px; gap: 8px; align-items: center; padding: 8px 14px; }
+.mechanic-header { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.mechanic-row, .mechanic-mini-row { border-bottom: 1px solid var(--border); font-size: 13px; }
+.mechanic-row:last-child, .mechanic-mini-row:last-child { border-bottom: none; }
+.mechanic-mini-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 14px; }
+.mechanic-subhead { padding: 7px 14px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.mechanic-summary-header, .mechanic-summary-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(120px, 1fr) 48px 96px; gap: 8px; align-items: center; padding: 8px 14px; }
+.mechanic-summary-header { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.mechanic-summary-row { border-bottom: 1px solid var(--border); font-size: 13px; }
+.mechanic-summary-row:last-child { border-bottom: none; }
+.mechanic-summary-row span, .mechanic-summary-row strong { min-width: 0; overflow-wrap: anywhere; }
+.player-name { font-weight: 600; }
+.class-deathknight { color: #c41e3a; }
+.class-demonhunter { color: #a330c9; }
+.class-druid { color: #ff7c0a; }
+.class-evoker { color: #33937f; }
+.class-hunter { color: #aad372; }
+.class-mage { color: #3fc7eb; }
+.class-monk { color: #00ff98; }
+.class-paladin { color: #f48cba; }
+.class-priest { color: #ffffff; }
+.class-rogue { color: #fff468; }
+.class-shaman { color: #0070dd; }
+.class-warlock { color: #8788ee; }
+.class-warrior { color: #c69b6d; }
 
 .results-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
 .results-header { display: grid; grid-template-columns: 70px 130px 1fr 90px 100px; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
@@ -221,6 +255,10 @@ tbody tr:last-child td { border-bottom: none; }
   .layout { grid-template-columns: 1fr; }
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }
+  .mechanic-layout { grid-template-columns: 1fr; }
+  .mechanic-header, .mechanic-row { grid-template-columns: 90px 1fr 90px; }
+  .mechanic-header span:nth-child(3), .mechanic-row span:nth-child(3),
+  .mechanic-header span:nth-child(4), .mechanic-row span:nth-child(4) { display: none; }
   .filtered-header, .filtered-row { grid-template-columns: 90px 1fr 90px; }
   .filtered-header span:nth-child(4), .filtered-row span:nth-child(4),
   .filtered-header span:nth-child(5), .filtered-row span:nth-child(5) { display: none; }
