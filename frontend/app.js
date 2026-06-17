@@ -8,6 +8,7 @@ let selectedFight = null;
 let assignments = [];
 const analysisCache = new Map(); // keyed by `${code}:${fightId}:${sortedSpellIds}`
 let reportPhases = [];
+let loadedReportCode = null;
 try { assignments = JSON.parse(localStorage.getItem('cd-checker-assignments') || '[]'); } catch(_) {}
 renderAssignments();
 
@@ -61,17 +62,6 @@ function extractCode(url) {
   return m[1];
 }
 
-function extractFightParam(url) {
-  try {
-    const u = new URL(url);
-    const f = u.searchParams.get('fight');
-    if (!f) return 'last';
-    if (f === 'last') return 'last';
-    const n = parseInt(f);
-    return isNaN(n) ? 'last' : n;
-  } catch { return 'last'; }
-}
-
 async function wcl(query, variables = {}) {
   const resp = await fetch(`${WORKER_URL}/api/wcl`, {
     method: 'POST',
@@ -91,9 +81,28 @@ function clearError(el) {
   document.getElementById(el).innerHTML = '';
 }
 
-document.getElementById('logUrl').addEventListener('change', async function() {
-  const url = this.value.trim();
-  if (!url) return;
+document.getElementById('logUrl').addEventListener('input', function() {
+  const nextCode = this.value.trim() ? safeExtractCode(this.value.trim()) : null;
+  if (nextCode === loadedReportCode) return;
+  fights = [];
+  selectedFight = null;
+  reportPhases = [];
+  loadedReportCode = null;
+  document.getElementById('fight-picker').style.display = 'none';
+  clearError('log-error');
+});
+
+function safeExtractCode(url) {
+  try {
+    return extractCode(url);
+  } catch {
+    return null;
+  }
+}
+
+async function retrieveReport() {
+  const url = document.getElementById('logUrl').value.trim();
+  if (!url) { showError('log-error', 'Paste a WarcraftLogs report URL first.'); return; }
   clearError('log-error');
   document.getElementById('fight-picker').style.display = 'none';
   try {
@@ -109,19 +118,15 @@ document.getElementById('logUrl').addEventListener('change', async function() {
     sel.innerHTML = fights.map(f =>
       `<option value="${f.id}">${f.name} (${fmtTime(f.endTime - f.startTime)})</option>`
     ).join('');
-    const fightParam = extractFightParam(url);
-    if (fightParam === 'last') {
-      selectedFight = fights[fights.length - 1];
-    } else {
-      selectedFight = fights.find(f => f.id === fightParam) || fights[fights.length - 1];
-    }
+    selectedFight = fights[fights.length - 1];
+    loadedReportCode = code;
     sel.value = selectedFight.id;
-    document.getElementById('fightHint').textContent = `${fights.length} fight(s) — selected: ${selectedFight.name}`;
+    document.getElementById('fightHint').textContent = `${fights.length} fight(s) retrieved - selected latest: ${selectedFight.name}`;
     document.getElementById('fight-picker').style.display = 'block';
   } catch(e) {
     showError('log-error', e.message);
   }
-});
+}
 
 function loadFight() {
   const id = parseInt(document.getElementById('fightSelect').value);
@@ -223,16 +228,8 @@ async function runCheck() {
     const url = document.getElementById('logUrl').value.trim();
     if (!url) throw new Error('Paste a WarcraftLogs report URL first.');
     const code = extractCode(url);
-
-    if (!selectedFight) {
-      const data = await wcl(
-        `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
-        { code }
-      );
-      fights = data.reportData.report.fights;
-      reportPhases = data.reportData.report.phases || [];
-      selectedFight = fights[fights.length - 1];
-      if (!selectedFight) throw new Error('No fights found in this report. Paste the URL above and select a fight first.');
+    if (!selectedFight || loadedReportCode !== code) {
+      throw new Error('Click Retrieve to load fights for this report before analyzing.');
     }
 
     const fight = selectedFight;

@@ -21,8 +21,11 @@
       <div class="section-label">Report</div>
       <div class="card">
         <label>WarcraftLogs URL</label>
-        <input type="url" id="logUrl" placeholder="https://www.warcraftlogs.com/reports/…" />
-        <p class="hint">Paste a full report URL and pick a fight.</p>
+        <div class="input-row">
+          <input type="url" id="logUrl" placeholder="https://www.warcraftlogs.com/reports/…" />
+          <button class="btn" onclick="retrieveReport()">Retrieve</button>
+        </div>
+        <p class="hint">Paste a full report URL, retrieve fights, then analyze the selected fight.</p>
         <div id="fight-picker" style="display:none">
           <div class="fight-select-row">
             <select id="fightSelect" onchange="loadFight()"></select>
@@ -83,7 +86,7 @@
   <main class="main" id="mainArea">
     <div class="empty-state">
       <div class="icon">🗡️</div>
-      <p>Paste a WarcraftLogs URL, add your cooldown<br>assignments, and hit Analyze.</p>
+      <p>Paste a WarcraftLogs URL, retrieve fights,<br>add assignments, and hit Analyze.</p>
     </div>
   </main>
 </div>
