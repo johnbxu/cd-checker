@@ -26,6 +26,10 @@
           <button class="btn" onclick="retrieveReport()">Retrieve</button>
         </div>
         <p class="hint">Paste a full report URL, retrieve fights, then analyze the selected fight.</p>
+        <div id="recentReportsArea" style="display:none;margin-top:8px">
+          <label>Recent reports</label>
+          <select id="recentReports" onchange="loadRecentReport()"></select>
+        </div>
         <div id="fight-picker" style="display:none">
           <div class="fight-select-row">
             <select id="fightSelect" onchange="loadFight()"></select>
@@ -69,6 +73,12 @@
         <div class="csv-hint">
           <span style="font-size:13px;color:var(--muted);flex:1">Add rows below or</span>
           <button class="btn btn-sm" onclick="toggleMrtArea()">Import MRT</button>
+        </div>
+        <div class="template-row">
+          <select id="assignmentTemplates"></select>
+          <button class="btn btn-sm" onclick="loadAssignmentTemplate()">Load</button>
+          <button class="btn btn-sm" onclick="saveAssignmentTemplate()">Save</button>
+          <button class="btn btn-sm" onclick="deleteAssignmentTemplate()">Del</button>
         </div>
         <div id="mrtArea" style="display:none;margin-top:8px">
           <textarea id="mrtInput" rows="5" placeholder="Paste MRT note here…" style="width:100%;font-size:11px;font-family:monospace;resize:vertical"></textarea>

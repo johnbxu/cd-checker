@@ -9,6 +9,11 @@ const PERSISTENT_CACHE_DB = 'cd-checker-cache';
 const PERSISTENT_CACHE_STORE = 'responses';
 const PERSISTENT_CACHE_VERSION = 1;
 const PERSISTENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const ASSIGNMENT_TEMPLATES_KEY = 'cd-checker-assignment-templates';
+const RECENT_REPORTS_KEY = 'cd-checker-recent-reports';
+const RECENT_REPORT_LIMIT = 5;
+const SECTION_STATE_KEY = 'cd-checker-section-state';
+const GRAPH_ABILITY_VISIBILITY_KEY = 'cd-checker-graph-ability-visibility';
 let persistentCachePromise = null;
 let reportPhases = [];
 let loadedReportCode = null;
@@ -16,8 +21,19 @@ let activeResultFilter = 'all';
 let lastRenderContext = null;
 let lastMechanicRenderData = null;
 let mechanicSummarySort = 'damage';
+let damageGraphZoom = 1;
 try { assignments = JSON.parse(localStorage.getItem('cd-checker-assignments') || '[]'); } catch(_) {}
+let assignmentTemplates = [];
+let recentReports = [];
+let sectionState = {};
+let graphAbilityVisibility = {};
+try { assignmentTemplates = JSON.parse(localStorage.getItem(ASSIGNMENT_TEMPLATES_KEY) || '[]'); } catch(_) {}
+try { recentReports = JSON.parse(localStorage.getItem(RECENT_REPORTS_KEY) || '[]'); } catch(_) {}
+try { sectionState = JSON.parse(localStorage.getItem(SECTION_STATE_KEY) || '{}'); } catch(_) {}
+try { graphAbilityVisibility = JSON.parse(localStorage.getItem(GRAPH_ABILITY_VISIBILITY_KEY) || '{}'); } catch(_) {}
 renderAssignments();
+renderAssignmentTemplates();
+renderRecentReports();
 
 const MIDNIGHT_FALLS = {
   fightName: 'Midnight Falls',
@@ -56,6 +72,13 @@ function fmtTime(ms) {
   const s = Math.round(ms / 1000);
   const m = Math.floor(s / 60);
   return m + ':' + String(s % 60).padStart(2, '0');
+}
+
+function formatReportDate(startTime) {
+  if (!startTime) return '';
+  const date = new Date(startTime);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function normalizePhaseId(value) {
@@ -191,6 +214,86 @@ function clearError(el) {
   document.getElementById(el).innerHTML = '';
 }
 
+function saveAssignmentTemplates() {
+  localStorage.setItem(ASSIGNMENT_TEMPLATES_KEY, JSON.stringify(assignmentTemplates));
+}
+
+function renderAssignmentTemplates() {
+  const sel = document.getElementById('assignmentTemplates');
+  if (!sel) return;
+  sel.innerHTML = assignmentTemplates.length
+    ? assignmentTemplates.map((template, i) => `<option value="${i}">${escHtml(template.name)}</option>`).join('')
+    : '<option value="">No templates saved</option>';
+}
+
+function saveAssignmentTemplate() {
+  if (!assignments.length) return;
+  const existing = assignmentTemplates[parseInt(document.getElementById('assignmentTemplates').value, 10)];
+  const defaultName = existing?.name || selectedFight?.name || 'Cooldowns';
+  const name = prompt('Template name', defaultName)?.trim();
+  if (!name) return;
+  const template = { name, assignments: JSON.parse(JSON.stringify(assignments)) };
+  const index = assignmentTemplates.findIndex(t => t.name.toLowerCase() === name.toLowerCase());
+  if (index >= 0) assignmentTemplates[index] = template;
+  else assignmentTemplates.push(template);
+  saveAssignmentTemplates();
+  renderAssignmentTemplates();
+}
+
+function loadAssignmentTemplate() {
+  const template = assignmentTemplates[parseInt(document.getElementById('assignmentTemplates').value, 10)];
+  if (!template) return;
+  assignments = JSON.parse(JSON.stringify(template.assignments || []));
+  renderAssignments();
+  saveAssignments();
+}
+
+function deleteAssignmentTemplate() {
+  const index = parseInt(document.getElementById('assignmentTemplates').value, 10);
+  if (!assignmentTemplates[index]) return;
+  assignmentTemplates.splice(index, 1);
+  saveAssignmentTemplates();
+  renderAssignmentTemplates();
+}
+
+function saveRecentReports() {
+  localStorage.setItem(RECENT_REPORTS_KEY, JSON.stringify(recentReports));
+}
+
+function recentReportLabel(report) {
+  return report.date ? `${report.title} - ${report.date}` : report.title;
+}
+
+function renderRecentReports() {
+  const area = document.getElementById('recentReportsArea');
+  const sel = document.getElementById('recentReports');
+  if (!area || !sel) return;
+  area.style.display = recentReports.length ? 'block' : 'none';
+  sel.innerHTML = '<option value="">Select a recent report</option>' + recentReports.map((report, i) =>
+    `<option value="${i}">${escHtml(recentReportLabel(report))}</option>`
+  ).join('');
+}
+
+function addRecentReport(code, url, report) {
+  const title = report.title || code;
+  const date = formatReportDate(report.startTime);
+  recentReports = [
+    { code, url, title, date },
+    ...recentReports.filter(r => r.code !== code)
+  ].slice(0, RECENT_REPORT_LIMIT);
+  saveRecentReports();
+  renderRecentReports();
+}
+
+function loadRecentReport() {
+  const report = recentReports[parseInt(document.getElementById('recentReports').value, 10)];
+  if (!report) return;
+  const input = document.getElementById('logUrl');
+  input.value = report.url || `https://www.warcraftlogs.com/reports/${report.code}`;
+  input.dispatchEvent(new Event('input'));
+  retrieveReport();
+}
+
 document.getElementById('logUrl').addEventListener('input', function() {
   const nextCode = this.value.trim() ? safeExtractCode(this.value.trim()) : null;
   if (nextCode === loadedReportCode) return;
@@ -219,11 +322,11 @@ async function retrieveReport() {
   document.getElementById('fight-picker').style.display = 'none';
   try {
     const code = extractCode(url);
-    const cacheKey = `report:${code}:fights`;
+    const cacheKey = `report:${code}:fights:v2`;
     let report = await getPersistentCache(cacheKey);
     if (!report) {
       const data = await wcl(
-        `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
+        `query($code:String!){reportData{report(code:$code){title startTime phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
         { code }
       );
       report = data.reportData.report;
@@ -238,6 +341,7 @@ async function retrieveReport() {
     ).join('');
     selectedFight = fights[fights.length - 1];
     loadedReportCode = code;
+    addRecentReport(code, url, report);
     sel.value = selectedFight.id;
     document.getElementById('fightHint').textContent = `${fights.length} fight(s) retrieved - selected latest: ${selectedFight.name}`;
     document.getElementById('fight-picker').style.display = 'block';
@@ -344,7 +448,9 @@ function setResultFilter(filter) {
       lastRenderContext.fightDur,
       lastRenderContext.tolerance,
       lastRenderContext.phaseNameMap,
-      lastRenderContext.phaseStartMap
+      lastRenderContext.phaseStartMap,
+      lastRenderContext.damageEvents,
+      lastRenderContext.abilityMeta
     );
   }
 }
@@ -408,8 +514,276 @@ function eventAmount(ev) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
+function setSectionOpen(key, open) {
+  sectionState[key] = open;
+  localStorage.setItem(SECTION_STATE_KEY, JSON.stringify(sectionState));
+}
+
+function sectionOpenAttr(key, defaultOpen = true) {
+  return sectionState[key] ?? defaultOpen ? ' open' : '';
+}
+
+function sectionPanel(key, title, body, defaultOpen = true) {
+  return `
+    <details class="section-panel"${sectionOpenAttr(key, defaultOpen)} onchange="setSectionOpen('${escHtml(key)}', this.open)">
+      <summary>${escHtml(title)}</summary>
+      <div class="section-body">${body}</div>
+    </details>`;
+}
+
+function setDamageGraphZoom(value) {
+  damageGraphZoom = Math.max(1, Math.min(8, Number(value) || 1));
+  if (lastRenderContext) {
+    renderResults(
+      lastRenderContext.results,
+      lastRenderContext.fight,
+      lastRenderContext.fightDur,
+      lastRenderContext.tolerance,
+      lastRenderContext.phaseNameMap,
+      lastRenderContext.phaseStartMap,
+      lastRenderContext.damageEvents,
+      lastRenderContext.abilityMeta
+    );
+  } else if (lastMechanicRenderData) {
+    renderMidnightFallsResults(lastMechanicRenderData);
+  }
+}
+
+function damageGraphEvents(events, fight, fightPlayerIds = null) {
+  const ids = fightPlayerIds ? new Set([...fightPlayerIds].map(Number)) : null;
+  return (events || [])
+    .map(ev => {
+      const playerId = ids ? eventPlayerTargetId(ev, ids) : (ev.targetID || ev.sourceID || ev.actorID);
+      return { time: eventTime(ev, fight.startTime), amount: eventAmount(ev), playerId };
+    })
+    .filter(ev =>
+      Number.isFinite(ev.time) &&
+      ev.time >= 0 &&
+      ev.time <= fight.endTime - fight.startTime &&
+      ev.amount > 0 &&
+      (!ids || ids.has(ev.playerId))
+    );
+}
+
+function assignmentMarkerMs(assign, phaseStartMap) {
+  const phase = assignmentPhaseId(assign);
+  return phase !== null
+    ? (phaseStartMap[phase] ?? NaN) + Number(assign.time) * 1000
+    : parseTime(String(assign.time)) * 1000;
+}
+
+function graphSpellLabel(assign, abilityMeta = {}) {
+  const meta = abilityMeta[assign.spellId] || {};
+  return assign.spell || meta.name || (assign.spellId ? `ID:${assign.spellId}` : 'CD');
+}
+
+const WOWHEAD_ICON_BY_SPELL = {
+  antimagiczone: 'spell_deathknight_antimagiczone',
+  antimagicbarrier: 'spell_shadow_antimagicshell',
+  apotheosis: 'ability_priest_ascension',
+  ascendance: 'spell_fire_elementaldevastation',
+  auramastery: 'spell_holy_auramastery',
+  avengingwrath: 'spell_holy_avenginewrath',
+  blessingofprotection: 'spell_holy_sealofprotection',
+  blessingofthebronze: 'ability_evoker_blessingofthebronze',
+  darkness: 'ability_demonhunter_darkness',
+  devotionaura: 'spell_holy_devotionaura',
+  divinehymn: 'spell_holy_divinehymn',
+  dreamflight: 'ability_evoker_dreamflight',
+  evangelism: 'spell_holy_divineillumination',
+  fortifyingbrew: 'ability_monk_fortifyingale_new',
+  healthstone: 'inv_stone_04',
+  massbarrier: 'spell_arcane_massbarrier',
+  massinvisibility: 'ability_mage_massinvisibility',
+  naturesvigil: 'achievement_zone_feralas',
+  painresonance: 'ability_priest_painresonance',
+  powerwordradiance: 'spell_priest_power-word',
+  powerwordbarrier: 'spell_holy_powerwordbarrier',
+  rallyingcry: 'ability_warrior_rallyingcry',
+  renewal: 'ability_druid_giftoftheearthmother',
+  revival: 'spell_monk_revival',
+  rewind: 'ability_evoker_rewind',
+  spiritlinktotem: 'spell_shaman_spiritlink',
+  stampedingroar: 'spell_druid_stampedingroar_cat',
+  symbolofhope: 'spell_holy_symbolofhope',
+  tranquility: 'spell_nature_tranquility',
+  evokerzephyr: 'ability_evoker_hover',
+  zephyr: 'ability_evoker_hover'
+};
+
+function wowheadIconUrl(icon) {
+  return `https://wow.zamimg.com/images/wow/icons/small/${icon}.jpg`;
+}
+
+function graphSpellIcon(assign, abilityMeta = {}) {
+  const meta = abilityMeta[assign.spellId] || {};
+  const icon = meta.iconUrl || meta.icon || '';
+  if (/^https?:\/\//.test(icon) || icon.startsWith('data:')) return icon;
+  if (/^[a-z0-9_]+$/i.test(icon)) return wowheadIconUrl(icon);
+  const mapped = WOWHEAD_ICON_BY_SPELL[normalizeAbilityName(graphSpellLabel(assign, abilityMeta))];
+  return mapped ? wowheadIconUrl(mapped) : '';
+}
+
+function graphAbilityKey(assign, abilityMeta = {}) {
+  return normalizeAbilityName(graphSpellLabel(assign, abilityMeta));
+}
+
+function graphAbilityVisible(key) {
+  return graphAbilityVisibility[key] !== false;
+}
+
+function setGraphAbilityVisible(key, visible) {
+  graphAbilityVisibility[key] = visible;
+  localStorage.setItem(GRAPH_ABILITY_VISIBILITY_KEY, JSON.stringify(graphAbilityVisibility));
+  if (lastRenderContext) {
+    renderResults(
+      lastRenderContext.results,
+      lastRenderContext.fight,
+      lastRenderContext.fightDur,
+      lastRenderContext.tolerance,
+      lastRenderContext.phaseNameMap,
+      lastRenderContext.phaseStartMap,
+      lastRenderContext.damageEvents,
+      lastRenderContext.abilityMeta
+    );
+  } else if (lastMechanicRenderData) {
+    renderMidnightFallsResults(lastMechanicRenderData);
+  }
+}
+
+function graphAbilityOptions(fightDur, phaseStartMap, abilityMeta) {
+  const options = new Map();
+  assignments.forEach(assign => {
+    const ms = assignmentMarkerMs(assign, phaseStartMap);
+    if (!Number.isFinite(ms) || ms < 0 || ms > fightDur) return;
+    const key = graphAbilityKey(assign, abilityMeta);
+    if (!key || options.has(key)) return;
+    options.set(key, {
+      key,
+      label: graphSpellLabel(assign, abilityMeta),
+      icon: graphSpellIcon(assign, abilityMeta)
+    });
+  });
+  return [...options.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function renderGraphAbilityFilters(options) {
+  if (!options.length) return '';
+  return `<div class="graph-filter-list">${options.map(option => `
+    <label class="graph-filter">
+      <input type="checkbox" ${graphAbilityVisible(option.key) ? 'checked' : ''} onchange="setGraphAbilityVisible('${escHtml(option.key)}', this.checked)" />
+      ${option.icon ? `<img src="${escHtml(option.icon)}" alt="" onerror="this.remove()" />` : ''}
+      <span>${escHtml(option.label)}</span>
+    </label>
+  `).join('')}</div>`;
+}
+
+function graphAssignmentMarkers(fightDur, phaseStartMap, abilityMeta, xFor, width, pad) {
+  const lanes = [];
+  return assignments
+    .map(assign => ({ assign, key: graphAbilityKey(assign, abilityMeta), ms: assignmentMarkerMs(assign, phaseStartMap) }))
+    .filter(item => Number.isFinite(item.ms) && item.ms >= 0 && item.ms <= fightDur && graphAbilityVisible(item.key))
+    .sort((a, b) => a.ms - b.ms)
+    .map(item => {
+      const x = Number(xFor(item.ms).toFixed(1));
+      const spell = graphSpellLabel(item.assign, abilityMeta);
+      const icon = graphSpellIcon(item.assign, abilityMeta);
+      const label = `${item.assign.player} - ${spell} @ ${fmtTime(item.ms)}`;
+      const text = icon ? item.assign.player : `${item.assign.player}: ${spell}`;
+      const textWidth = Math.min(170, Math.max(58, text.length * 6.2 + (icon ? 24 : 10)));
+      const rectX = Math.max(pad.left, Math.min(width - pad.right - textWidth, x + 5));
+      const rectEnd = rectX + textWidth;
+      let lane = lanes.findIndex(end => rectX > end + 8);
+      if (lane === -1) {
+        lane = lanes.length;
+        lanes.push(0);
+      }
+      lanes[lane] = rectEnd;
+      return { x, spell, icon, label, text, textWidth, rectX, lane };
+    });
+}
+
+function renderDamageGraph(fight, fightDur, damageEvents, phaseStartMap, phaseNameMap, abilityMeta = {}) {
+  const bucketMs = 5000;
+  const tickMs = 15000;
+  const bucketCount = Math.max(1, Math.ceil(fightDur / bucketMs));
+  const buckets = Array(bucketCount).fill(0);
+  damageEvents.forEach(ev => {
+    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor(ev.time / bucketMs)));
+    buckets[index] += ev.amount;
+  });
+
+  const width = Math.round(Math.max(920, (fightDur / tickMs) * 52) * damageGraphZoom);
+  const pad = { left: 52, right: 18, top: 18, bottom: 34 };
+  const abilityOptions = graphAbilityOptions(fightDur, phaseStartMap, abilityMeta);
+  const markerSeedXFor = ms => pad.left + Math.min(1, Math.max(0, ms / fightDur)) * (width - pad.left - pad.right);
+  const markerData = graphAssignmentMarkers(fightDur, phaseStartMap, abilityMeta, markerSeedXFor, width, pad);
+  const labelBandH = markerData.length ? (Math.max(...markerData.map(item => item.lane)) + 1) * 22 + 12 : 0;
+  pad.top += labelBandH;
+  const height = 260 + labelBandH;
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const maxDamage = Math.max(...buckets, 1);
+  const xFor = ms => pad.left + Math.min(1, Math.max(0, ms / fightDur)) * plotW;
+  const yFor = amount => pad.top + plotH - (amount / maxDamage) * plotH;
+  const points = buckets.map((amount, i) => {
+    const ms = Math.min(fightDur, i * bucketMs + bucketMs / 2);
+    return `${xFor(ms).toFixed(1)},${yFor(amount).toFixed(1)}`;
+  }).join(' ');
+  const totalDamage = damageEvents.reduce((sum, ev) => sum + ev.amount, 0);
+  const phaseMarkers = Object.entries(phaseStartMap)
+    .filter(([, ms]) => ms > 0 && ms < fightDur)
+    .map(([id, ms]) => {
+      const x = xFor(ms).toFixed(1);
+      const label = phaseNameMap[id]?.name || `P${id}`;
+      return `<line class="graph-phase" x1="${x}" x2="${x}" y1="${pad.top}" y2="${pad.top + plotH}" />
+        <text class="graph-label" x="${Number(x) + 4}" y="${pad.top + 12}">${escHtml(label)}</text>`;
+    }).join('');
+  const ticks = Array.from({ length: Math.floor(fightDur / tickMs) + 1 }, (_, i) => i * tickMs)
+    .concat(fightDur)
+    .filter((ms, i, all) => i === 0 || ms - all[i - 1] > 1000)
+    .map(ms => {
+      const x = xFor(ms).toFixed(1);
+      return `<line class="graph-tick" x1="${x}" x2="${x}" y1="${pad.top + plotH}" y2="${pad.top + plotH + 5}" />
+        <text class="graph-label graph-time-label" x="${x}" y="${height - 10}">${fmtTime(ms)}</text>`;
+    }).join('');
+  const markers = markerData
+    .map(item => {
+      const laneY = 26 + item.lane * 22;
+      return `<g class="graph-cd">
+        <line x1="${item.x}" x2="${item.x}" y1="${laneY + 9}" y2="${pad.top + plotH}" />
+        <circle cx="${item.x}" cy="${laneY}" r="4"><title>${escHtml(item.label)}</title></circle>
+        <g class="graph-cd-label">
+          <rect x="${item.rectX}" y="${laneY - 10}" width="${item.textWidth}" height="18" rx="4"><title>${escHtml(item.label)}</title></rect>
+          ${item.icon ? `<image href="${escHtml(item.icon)}" x="${item.rectX + 3}" y="${laneY - 7}" width="12" height="12" onerror="this.remove()" />` : ''}
+          <text x="${item.rectX + (item.icon ? 19 : 5)}" y="${laneY + 3}">${escHtml(item.text)}</text>
+        </g>
+      </g>`;
+    }).join('');
+
+  return sectionPanel('damageGraph', 'Damage Taken Timeline', `
+    <div class="graph-toolbar">
+      <span>${damageEvents.length.toLocaleString()} events · ${totalDamage.toLocaleString()} damage · 5s buckets</span>
+      <label>Zoom <input type="range" min="1" max="8" step="0.5" value="${damageGraphZoom}" oninput="setDamageGraphZoom(this.value)" /></label>
+    </div>
+    ${renderGraphAbilityFilters(abilityOptions)}
+    <div class="damage-graph-scroll">
+      <svg class="damage-graph" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Damage taken over fight with cooldown assignment markers">
+        <line class="graph-axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${pad.top + plotH}" />
+        <line class="graph-axis" x1="${pad.left}" x2="${pad.left + plotW}" y1="${pad.top + plotH}" y2="${pad.top + plotH}" />
+        ${ticks}
+        <text class="graph-label" x="8" y="${pad.top + 10}">${maxDamage.toLocaleString()}</text>
+        ${phaseMarkers}
+        <polyline class="graph-line" points="${points}" />
+        ${markers}
+      </svg>
+    </div>
+    <div class="graph-legend"><span class="legend-line"></span>Damage taken <span class="legend-cd"></span>Assigned cooldown</div>
+  `);
+}
+
 async function fetchMidnightMetadata(code, fight) {
-  const cacheKey = `${code}:${fight.id}:metadata`;
+  const cacheKey = `${code}:${fight.id}:metadata:v2`;
   if (mechanicEventCache.has(cacheKey)) return mechanicEventCache.get(cacheKey);
   const persistentKey = `mechanics:${cacheKey}`;
   const cached = await getPersistentCache(persistentKey);
@@ -417,16 +791,24 @@ async function fetchMidnightMetadata(code, fight) {
     mechanicEventCache.set(cacheKey, cached);
     return cached;
   }
-  const data = await wcl(
-    `query($code:String!,$start:Float!,$end:Float!){
-      reportData{report(code:$code){
-        masterData{ actors{ id name type subType } abilities{ gameID name } }
-        combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:10000){data}
-        deaths: events(dataType:Deaths,startTime:$start,endTime:$end,limit:10000){data}
-      }}
-    }`,
-    { code, start: fight.startTime, end: fight.endTime }
-  );
+  let data;
+  for (const abilityFields of ['gameID name icon', 'gameID name']) {
+    try {
+      data = await wcl(
+        `query($code:String!,$start:Float!,$end:Float!){
+          reportData{report(code:$code){
+            masterData{ actors{ id name type subType } abilities{ ${abilityFields} } }
+            combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:10000){data}
+            deaths: events(dataType:Deaths,startTime:$start,endTime:$end,limit:10000){data}
+          }}
+        }`,
+        { code, start: fight.startTime, end: fight.endTime }
+      );
+      break;
+    } catch (e) {
+      if (abilityFields === 'gameID name') throw e;
+    }
+  }
   mechanicEventCache.set(cacheKey, data);
   await setPersistentCache(persistentKey, data);
   return data;
@@ -583,6 +965,7 @@ async function analyzeMidnightFight(code, fight, deathCutoff) {
   const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
   const classMap = Object.fromEntries(actors.map(a => [a.id, a.subType || a.type || '']));
   const abilities = report.masterData?.abilities || [];
+  const abilityMeta = Object.fromEntries(abilities.map(a => [a.gameID, a]));
   const spellIdToName = Object.fromEntries(abilities.map(a => [a.gameID, a.name]));
   const combatantEvents = report.combatants?.data || [];
   const fightPlayerIds = idSet(combatantEvents.map(e => e.sourceID).filter(Boolean));
@@ -677,6 +1060,8 @@ async function analyzeMidnightFight(code, fight, deathCutoff) {
     galvanizeHits,
     galvanizeMisses,
     midnightHits,
+    graphDamageEvents: damageGraphEvents(damageEvents, fight, fightPlayerIds),
+    abilityMeta,
     deathCutoff,
     cutoffTime
   };
@@ -773,35 +1158,49 @@ async function runCheck() {
     // Cache API results by report + fight + spell IDs so re-clicking Analyze is free
     const assignmentSpellIds = [...new Set(assignments.filter(a => a.spellId).map(a => a.spellId))].sort();
     const cacheKey = `${code}:${fight.id}:${assignmentSpellIds.join(',')}`;
-    let actorMap, spellIdToName, fightPlayerNames, rawEvents;
+    let actorMap, abilityMeta, spellIdToName, fightPlayerNames, fightPlayerIds, rawEvents;
 
     if (analysisCache.has(cacheKey)) {
-      ({ actorMap, spellIdToName, fightPlayerNames, rawEvents } = analysisCache.get(cacheKey));
+      ({ actorMap, abilityMeta, spellIdToName, fightPlayerNames, fightPlayerIds, rawEvents } = analysisCache.get(cacheKey));
     } else {
       // Pass spell IDs as a server-side filter so WCL only returns the events we need
       const filterExpr = assignmentSpellIds.length > 0
         ? `ability.id in (${assignmentSpellIds.join(',')})`
         : null;
-      const castData = await wcl(
-        `query($code:String!,$start:Float!,$end:Float!${filterExpr ? ',$filter:String!' : ''}){
-          reportData{report(code:$code){
-            masterData{ actors{ id name } abilities{ gameID name } }
-            combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:100){data}
-            casts: events(dataType:Casts,startTime:$start,endTime:$end,limit:10000${filterExpr ? ',filterExpression:$filter' : ''}){data}
-          }}
-        }`,
-        { code, start: fight.startTime, end: fight.endTime, ...(filterExpr ? { filter: filterExpr } : {}) }
-      );
+      let castData;
+      for (const abilityFields of ['gameID name icon', 'gameID name']) {
+        try {
+          castData = await wcl(
+            `query($code:String!,$start:Float!,$end:Float!${filterExpr ? ',$filter:String!' : ''}){
+              reportData{report(code:$code){
+                masterData{ actors{ id name } abilities{ ${abilityFields} } }
+                combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:100){data}
+                casts: events(dataType:Casts,startTime:$start,endTime:$end,limit:10000${filterExpr ? ',filterExpression:$filter' : ''}){data}
+              }}
+            }`,
+            { code, start: fight.startTime, end: fight.endTime, ...(filterExpr ? { filter: filterExpr } : {}) }
+          );
+          break;
+        } catch (e) {
+          if (abilityFields === 'gameID name') throw e;
+        }
+      }
       const actors = castData.reportData.report.masterData?.actors || [];
       actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
       const abilities = castData.reportData.report.masterData?.abilities || [];
+      abilityMeta = Object.fromEntries(abilities.map(a => [a.gameID, a]));
       spellIdToName = Object.fromEntries(abilities.map(a => [a.gameID, a.name]));
       const combatantEvents = castData.reportData.report.combatants?.data || [];
-      const fightPlayerIds = new Set(combatantEvents.map(e => e.sourceID).filter(Boolean));
+      fightPlayerIds = new Set(combatantEvents.map(e => e.sourceID).filter(Boolean));
       fightPlayerNames = new Set([...fightPlayerIds].map(id => actorMap[id]).filter(Boolean));
       rawEvents = castData.reportData.report.casts?.data || [];
-      analysisCache.set(cacheKey, { actorMap, spellIdToName, fightPlayerNames, rawEvents });
+      analysisCache.set(cacheKey, { actorMap, abilityMeta, spellIdToName, fightPlayerNames, fightPlayerIds, rawEvents });
     }
+
+    let graphEvents = [];
+    try {
+      graphEvents = damageGraphEvents(await fetchAllDamageEvents(code, fight, 'DamageTaken'), fight, fightPlayerIds);
+    } catch (_) {}
 
     // Only check assignments for players present in this fight
     const activeAssignments = assignments.filter(assign =>
@@ -877,7 +1276,7 @@ async function runCheck() {
       });
 
     activeResultFilter = 'all';
-    renderResults(results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap);
+    renderResults(results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap, graphEvents, abilityMeta);
   } catch(e) {
     document.getElementById('mainArea').innerHTML = `<div class="error-box">⚠ ${escHtml(e.message)}</div>`;
   }
@@ -885,8 +1284,8 @@ async function runCheck() {
 
 // ─── Render results ─────────────────────────────────────────────────────────
 
-function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, phaseStartMap = {}) {
-  lastRenderContext = { results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap };
+function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, phaseStartMap = {}, damageEvents = [], abilityMeta = {}) {
+  lastRenderContext = { results, fight, fightDur, tolerance, phaseNameMap, phaseStartMap, damageEvents, abilityMeta };
 
   const counts = { ok: 0, late: 0, early: 0, missed: 0 };
   results.forEach(r => counts[r.status]++);
@@ -965,11 +1364,9 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
       <span><span class="badge ${badges[r.status]}">${labels[r.status](r)}</span></span>
     </div>
   `).join('');
-  const focusedPanel = activeResultFilter === 'all' ? '' : `
-    <div class="filtered-panel">
-      <div class="filtered-head">
+  const focusedPanel = activeResultFilter === 'all' ? '' : sectionPanel('filteredResults', filterTitle(activeResultFilter), `
+      <div class="filtered-head filtered-head-inline">
         <div>
-          <h2>${escHtml(filterTitle(activeResultFilter))}</h2>
           <p>${visibleResults.length} of ${results.length} cooldown assignment(s)</p>
         </div>
         <button class="btn btn-sm" onclick="setResultFilter('all')">Clear</button>
@@ -980,7 +1377,7 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
         </div>
         ${focusedRows || `<div class="result-empty">No ${escHtml(filterTitle(activeResultFilter).toLowerCase())} results.</div>`}
       </div>
-    </div>`;
+  `);
 
   // Show the last phase reached in the fight header
   const maxPhaseId = Math.max(...Object.keys(phaseStartMap).map(Number));
@@ -988,25 +1385,34 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
   const phaseReachedLabel = lastPhaseName && maxPhaseId > 1
     ? `<span class="dur">→ ${escHtml(lastPhaseName)}</span>` : '';
 
-  document.getElementById('mainArea').innerHTML = `
-    <div class="fight-title">
-      ${escHtml(fight.name)}
-      <span class="dur">${fmtTime(fight.endTime - fight.startTime)}</span>
-      ${phaseReachedLabel}
+  const graphPanel = damageEvents.length
+    ? renderDamageGraph(fight, fightDur, damageEvents, phaseStartMap, phaseNameMap, abilityMeta)
+    : '';
+  const resultsPanel = sectionPanel('cooldownResults', 'Cooldown Results', `
+    <div class="results-header">
+      <span>Assigned</span><span>Player</span><span>Spell</span><span>Actual</span><span>Status</span>
     </div>
+    ${rows}
+  `);
+  const summaryPanel = sectionPanel('cooldownOverview', 'Cooldown Overview', `
     <div class="summary-grid">
       <button type="button" class="stat stat-ok${statActive('ok')}" onclick="setResultFilter('ok')" aria-pressed="${activeResultFilter === 'ok'}"><div class="stat-num">${counts.ok}</div><div class="stat-lbl">On time</div></button>
       <button type="button" class="stat stat-late${statActive('off')}" onclick="setResultFilter('off')" aria-pressed="${activeResultFilter === 'off'}"><div class="stat-num">${counts.late + counts.early}</div><div class="stat-lbl">Off timing</div></button>
       <button type="button" class="stat stat-missed${statActive('missed')}" onclick="setResultFilter('missed')" aria-pressed="${activeResultFilter === 'missed'}"><div class="stat-num">${counts.missed}</div><div class="stat-lbl">Missed</div></button>
       <button type="button" class="stat${statActive('all')}" onclick="setResultFilter('all')" aria-pressed="${activeResultFilter === 'all'}"><div class="stat-num">${results.length}</div><div class="stat-lbl">Total</div></button>
     </div>
+  `);
+
+  document.getElementById('mainArea').innerHTML = `
+    <div class="fight-title">
+      ${escHtml(fight.name)}
+      <span class="dur">${fmtTime(fight.endTime - fight.startTime)}</span>
+      ${phaseReachedLabel}
+    </div>
+    ${summaryPanel}
+    ${graphPanel}
     ${focusedPanel}
-    <div class="results-table-wrap">
-      <div class="results-header">
-        <span>Assigned</span><span>Player</span><span>Spell</span><span>Actual</span><span>Status</span>
-      </div>
-      ${rows}
-    </div>`;
+    ${resultsPanel}`;
 }
 
 function renderMidnightFallsResults(data) {
@@ -1021,6 +1427,8 @@ function renderMidnightFallsResults(data) {
     galvanizeHits,
     galvanizeMisses,
     midnightHits,
+    graphDamageEvents = [],
+    abilityMeta = {},
     deathCutoff,
     cutoffTime,
     damageSummary,
@@ -1125,13 +1533,27 @@ function renderMidnightFallsResults(data) {
   const lastPhaseName = phaseNameMap[maxPhaseId]?.name;
   const phaseReachedLabel = lastPhaseName && maxPhaseId > 1
     ? `<span class="dur">→ ${escHtml(lastPhaseName)}</span>` : '';
-
-  document.getElementById('mainArea').innerHTML = `
-    <div class="fight-title">
-      ${escHtml(fight.name)}
-      <span class="dur">${isAggregate ? `${aggregateCount} pulls` : fmtTime(fight.endTime - fight.startTime)}</span>
-      ${phaseReachedLabel}
+  const graphPanel = !isAggregate && graphDamageEvents.length
+    ? renderDamageGraph(fight, fightDur, graphDamageEvents, phaseStartMap, phaseNameMap, abilityMeta)
+    : '';
+  const mechanicDetailPanel = sectionPanel('mechanicDetails', 'Midnight Falls Mechanics', `
+    <div class="mechanic-head">
+      <p>Damage taken, missed Galvanize soaks, and Midnight avoidable hits grouped by phase. ${escHtml(cutoffLabel)}</p>
     </div>
+    <div class="mechanic-header${isAggregate ? ' is-aggregate' : ''}">
+      ${isAggregate ? '<span>Pull</span>' : ''}
+      <span>Time</span><span>Player</span><span>Ability</span><span>Damage</span><span>Phase</span>
+    </div>
+    ${phaseSections || '<div class="result-empty">No Midnight Falls mechanic data found.</div>'}
+  `);
+  const damageSummaryPanel = sectionPanel('damageSummary', 'Damage Summary', `
+    <div class="mechanic-head">
+      <p>Hits and damage by player, split by ability</p>
+      ${summarySortButtons}
+    </div>
+    ${summarySections || '<div class="result-empty">No tracked damage.</div>'}
+  `);
+  const mechanicOverviewPanel = sectionPanel('mechanicOverview', 'Mechanic Overview', `
     <div class="summary-grid">
       <div class="stat stat-missed"><div class="stat-num">${allDamage.length}</div><div class="stat-lbl">Tracked hits</div></div>
       <div class="stat stat-missed"><div class="stat-num">${galvanizeMisses.length}</div><div class="stat-lbl">Galvanize misses</div></div>
@@ -1144,25 +1566,18 @@ function renderMidnightFallsResults(data) {
       <div class="stat"><div class="stat-num">${fmtTime(fightDur)}</div><div class="stat-lbl">Duration</div></div>
       <div class="stat"><div class="stat-num">${phases.length}</div><div class="stat-lbl">Phases</div></div>
     </div>
+  `);
+
+  document.getElementById('mainArea').innerHTML = `
+    <div class="fight-title">
+      ${escHtml(fight.name)}
+      <span class="dur">${isAggregate ? `${aggregateCount} pulls` : fmtTime(fight.endTime - fight.startTime)}</span>
+      ${phaseReachedLabel}
+    </div>
+    ${mechanicOverviewPanel}
+    ${graphPanel}
     <div class="mechanic-layout">
-      <div class="results-table-wrap">
-        <div class="mechanic-head">
-          <h2>Midnight Falls Mechanics</h2>
-          <p>Damage taken, missed Galvanize soaks, and Midnight avoidable hits grouped by phase. ${escHtml(cutoffLabel)}</p>
-        </div>
-        <div class="mechanic-header${isAggregate ? ' is-aggregate' : ''}">
-          ${isAggregate ? '<span>Pull</span>' : ''}
-          <span>Time</span><span>Player</span><span>Ability</span><span>Damage</span><span>Phase</span>
-        </div>
-        ${phaseSections || '<div class="result-empty">No Midnight Falls mechanic data found.</div>'}
-      </div>
-      <div class="results-table-wrap">
-        <div class="mechanic-head">
-          <h2>Damage Summary</h2>
-          <p>Hits and damage by player, split by ability</p>
-          ${summarySortButtons}
-        </div>
-        ${summarySections || '<div class="result-empty">No tracked damage.</div>'}
-      </div>
+      ${mechanicDetailPanel}
+      ${damageSummaryPanel}
     </div>`;
 }

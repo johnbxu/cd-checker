@@ -179,6 +179,38 @@ tbody tr:last-child td { border-bottom: none; }
 .filtered-header { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
 .filtered-row { border-bottom: 1px solid var(--border); }
 .filtered-row:last-child { border-bottom: none; }
+.section-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 1rem; }
+.section-panel summary { cursor: pointer; list-style: none; padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; }
+.section-panel summary::-webkit-details-marker { display: none; }
+.section-panel summary::before { content: ">"; display: inline-block; margin-right: 8px; color: var(--muted); transition: transform 0.12s; }
+.section-panel[open] summary::before { transform: rotate(90deg); }
+.section-panel:not([open]) summary { border-bottom: none; }
+.section-body { overflow: hidden; }
+.section-inline { margin-bottom: 1rem; }
+.section-body > .summary-grid { margin: 0; padding: 14px; }
+.section-body > .summary-grid + .summary-grid { padding-top: 0; }
+
+.graph-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.graph-toolbar label { display: flex; align-items: center; gap: 8px; margin: 0; white-space: nowrap; }
+.graph-toolbar input[type=range] { accent-color: var(--accent); }
+.graph-filter-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.graph-filter { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.03); color: var(--text); font-size: 12px; cursor: pointer; }
+.graph-filter input { width: auto; accent-color: var(--accent); }
+.graph-filter img { width: 16px; height: 16px; border-radius: 3px; }
+.damage-graph-scroll { overflow-x: auto; padding: 12px 14px 8px; }
+.damage-graph { display: block; min-width: 100%; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius); }
+.graph-axis, .graph-phase, .graph-tick { stroke: rgba(255,255,255,0.18); stroke-width: 1; }
+.graph-phase { stroke-dasharray: 4 5; }
+.graph-line { fill: none; stroke: var(--red); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.graph-cd line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: 0.9; }
+.graph-cd circle { fill: var(--accent); stroke: var(--bg); stroke-width: 1.5; }
+.graph-cd-label rect { fill: rgba(14,14,16,0.86); stroke: rgba(199,154,60,0.55); }
+.graph-cd-label text { fill: var(--text); font-size: 10px; pointer-events: none; }
+.graph-label { fill: var(--muted); font-size: 11px; }
+.graph-time-label { text-anchor: middle; }
+.graph-legend { display: flex; align-items: center; gap: 8px; padding: 0 14px 12px; color: var(--muted); font-size: 12px; }
+.legend-line { width: 28px; height: 3px; background: var(--red); border-radius: 2px; }
+.legend-cd { width: 10px; height: 10px; background: var(--accent); border-radius: 50%; margin-left: 12px; }
 
 .mechanic-rule-grid { margin-top: -0.75rem; }
 .mechanic-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(380px, 1fr); gap: 12px; }
@@ -260,6 +292,7 @@ tbody tr:last-child td { border-bottom: none; }
 .fight-select-row select { flex: 1; }
 
 .csv-hint { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.template-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 5px; align-items: center; margin: 8px 0; }
 
 @media (max-width: 700px) {
   .layout { grid-template-columns: 1fr; }
