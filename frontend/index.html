@@ -44,12 +44,20 @@
       Analyze mechanics →
     </button>
 
+    <button class="btn btn-full" onclick="runAggregateMechanicCheck()">
+      Aggregate matching fights →
+    </button>
+
     <div>
       <div class="section-label">Mechanics</div>
       <div class="card">
         <div class="mechanic-preset">
           <strong>Midnight Falls</strong>
           <span>Damage taken checks, Galvanize soak misses, and Midnight avoidable hits.</span>
+        </div>
+        <div class="mechanic-option">
+          <label for="mechanicDeathCutoff">Ignore after deaths</label>
+          <input type="number" min="0" step="1" id="mechanicDeathCutoff" value="0" />
         </div>
         <p class="hint">Retrieve a Midnight Falls pull, then run Analyze mechanics.</p>
       </div>

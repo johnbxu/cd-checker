@@ -4,10 +4,18 @@ let fights = [];
 let selectedFight = null;
 let assignments = [];
 const analysisCache = new Map(); // keyed by `${code}:${fightId}:${sortedSpellIds}`
+const mechanicEventCache = new Map(); // keyed by `${code}:${fightId}:${kind}`
+const PERSISTENT_CACHE_DB = 'cd-checker-cache';
+const PERSISTENT_CACHE_STORE = 'responses';
+const PERSISTENT_CACHE_VERSION = 1;
+const PERSISTENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let persistentCachePromise = null;
 let reportPhases = [];
 let loadedReportCode = null;
 let activeResultFilter = 'all';
 let lastRenderContext = null;
+let lastMechanicRenderData = null;
+let mechanicSummarySort = 'damage';
 try { assignments = JSON.parse(localStorage.getItem('cd-checker-assignments') || '[]'); } catch(_) {}
 renderAssignments();
 
@@ -116,6 +124,54 @@ function extractCode(url) {
   return m[1];
 }
 
+function openPersistentCache() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (persistentCachePromise) return persistentCachePromise;
+  persistentCachePromise = new Promise(resolve => {
+    const request = indexedDB.open(PERSISTENT_CACHE_DB, PERSISTENT_CACHE_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PERSISTENT_CACHE_STORE)) {
+        db.createObjectStore(PERSISTENT_CACHE_STORE, { keyPath: 'key' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+  return persistentCachePromise;
+}
+
+async function getPersistentCache(key) {
+  const db = await openPersistentCache();
+  if (!db) return null;
+  return new Promise(resolve => {
+    const request = db.transaction(PERSISTENT_CACHE_STORE, 'readonly')
+      .objectStore(PERSISTENT_CACHE_STORE)
+      .get(key);
+    request.onsuccess = () => {
+      const entry = request.result;
+      if (!entry || Date.now() - entry.updatedAt > PERSISTENT_CACHE_MAX_AGE_MS) {
+        resolve(null);
+        return;
+      }
+      resolve(entry.value);
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+async function setPersistentCache(key, value) {
+  const db = await openPersistentCache();
+  if (!db) return;
+  await new Promise(resolve => {
+    const request = db.transaction(PERSISTENT_CACHE_STORE, 'readwrite')
+      .objectStore(PERSISTENT_CACHE_STORE)
+      .put({ key, value, updatedAt: Date.now() });
+    request.onsuccess = () => resolve();
+    request.onerror = () => resolve();
+  });
+}
+
 async function wcl(query, variables = {}) {
   const resp = await fetch(`${API_BASE_URL}/api/wcl`, {
     method: 'POST',
@@ -142,6 +198,8 @@ document.getElementById('logUrl').addEventListener('input', function() {
   selectedFight = null;
   reportPhases = [];
   loadedReportCode = null;
+  analysisCache.clear();
+  mechanicEventCache.clear();
   document.getElementById('fight-picker').style.display = 'none';
   clearError('log-error');
 });
@@ -161,12 +219,18 @@ async function retrieveReport() {
   document.getElementById('fight-picker').style.display = 'none';
   try {
     const code = extractCode(url);
-    const data = await wcl(
-      `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
-      { code }
-    );
-    fights = data.reportData.report.fights;
-    reportPhases = data.reportData.report.phases || [];
+    const cacheKey = `report:${code}:fights`;
+    let report = await getPersistentCache(cacheKey);
+    if (!report) {
+      const data = await wcl(
+        `query($code:String!){reportData{report(code:$code){phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
+        { code }
+      );
+      report = data.reportData.report;
+      await setPersistentCache(cacheKey, report);
+    }
+    fights = report.fights;
+    reportPhases = report.phases || [];
     if (!fights.length) { showError('log-error', 'No fights found in this report.'); return; }
     const sel = document.getElementById('fightSelect');
     sel.innerHTML = fights.map(f =>
@@ -285,6 +349,11 @@ function setResultFilter(filter) {
   }
 }
 
+function setMechanicSummarySort(sort) {
+  mechanicSummarySort = sort === 'hits' ? 'hits' : 'damage';
+  if (lastMechanicRenderData) renderMidnightFallsResults(lastMechanicRenderData);
+}
+
 function resultMatchesFilter(result, filter) {
   if (filter === 'all') return true;
   if (filter === 'off') return result.status === 'late' || result.status === 'early';
@@ -340,7 +409,15 @@ function eventAmount(ev) {
 }
 
 async function fetchMidnightMetadata(code, fight) {
-  return wcl(
+  const cacheKey = `${code}:${fight.id}:metadata`;
+  if (mechanicEventCache.has(cacheKey)) return mechanicEventCache.get(cacheKey);
+  const persistentKey = `mechanics:${cacheKey}`;
+  const cached = await getPersistentCache(persistentKey);
+  if (cached) {
+    mechanicEventCache.set(cacheKey, cached);
+    return cached;
+  }
+  const data = await wcl(
     `query($code:String!,$start:Float!,$end:Float!){
       reportData{report(code:$code){
         masterData{ actors{ id name type subType } abilities{ gameID name } }
@@ -350,6 +427,9 @@ async function fetchMidnightMetadata(code, fight) {
     }`,
     { code, start: fight.startTime, end: fight.endTime }
   );
+  mechanicEventCache.set(cacheKey, data);
+  await setPersistentCache(persistentKey, data);
+  return data;
 }
 
 async function fetchDamagePage(code, start, end, damageType) {
@@ -364,6 +444,14 @@ async function fetchDamagePage(code, start, end, damageType) {
 }
 
 async function fetchAllDamageEvents(code, fight, damageType = 'DamageTaken') {
+  const cacheKey = `${code}:${fight.id}:damage:${damageType}`;
+  if (mechanicEventCache.has(cacheKey)) return mechanicEventCache.get(cacheKey);
+  const persistentKey = `mechanics:${cacheKey}`;
+  const cached = await getPersistentCache(persistentKey);
+  if (cached) {
+    mechanicEventCache.set(cacheKey, cached);
+    return cached;
+  }
   const events = [];
   let start = fight.startTime;
   while (start < fight.endTime) {
@@ -373,6 +461,8 @@ async function fetchAllDamageEvents(code, fight, damageType = 'DamageTaken') {
     if (!page?.nextPageTimestamp || page.nextPageTimestamp <= start) break;
     start = page.nextPageTimestamp;
   }
+  mechanicEventCache.set(cacheKey, events);
+  await setPersistentCache(persistentKey, events);
   return events;
 }
 
@@ -385,6 +475,18 @@ function deathTimeByPlayer(deathEvents, fightStart) {
     if (!deaths.has(playerId) || time < deaths.get(playerId)) deaths.set(playerId, time);
   });
   return deaths;
+}
+
+function nthDeathCutoffTime(deathEvents, fightStart, cutoff, fightPlayerIds) {
+  if (!cutoff) return Infinity;
+  const deaths = deathEvents
+    .map(ev => ({
+      playerId: ev.targetID || ev.sourceID || ev.actorID,
+      time: eventTime(ev, fightStart)
+    }))
+    .filter(death => death.playerId && Number.isFinite(death.time) && (!fightPlayerIds.size || fightPlayerIds.has(death.playerId)))
+    .sort((a, b) => a.time - b.time);
+  return deaths.length >= cutoff ? deaths[cutoff - 1].time : Infinity;
 }
 
 function playerAliveAt(playerId, time, deathsByPlayer) {
@@ -408,12 +510,13 @@ function groupGalvanizeEvents(events) {
 function aggregateDamage(events) {
   const byPlayerSpell = new Map();
   events.forEach(event => {
-    const key = `${event.player}|${event.ability}`;
+    const ability = event.summaryAbility || event.ability;
+    const key = `${event.player}|${normalizeAbilityName(ability)}`;
     if (!byPlayerSpell.has(key)) {
       byPlayerSpell.set(key, {
         player: event.player,
         className: event.className,
-        ability: event.ability,
+        ability,
         hits: 0,
         damage: 0
       });
@@ -442,7 +545,11 @@ function groupByTimestampWindow(events, windowMs) {
 function filterSecondaryStarsplinterHits(events) {
   return events
     .filter(event => event.amount > MIDNIGHT_FALLS.starsplinterSplashMinDamage)
-    .map(event => ({ ...event, ability: `${event.ability} (splash)` }));
+    .map(event => ({
+      ...event,
+      ability: `${event.ability} (splash)`,
+      summaryAbility: `${event.ability} (splash)`
+    }));
 }
 
 function groupRepeatedDamageHits(events) {
@@ -461,15 +568,145 @@ function groupRepeatedDamageHits(events) {
         ...first,
         amount,
         hits: group.events.length,
+        summaryAbility: first.ability,
         ability: group.events.length > 1 ? `${first.ability} x${group.events.length}` : first.ability
       };
     })
   );
 }
 
+async function analyzeMidnightFight(code, fight, deathCutoff) {
+  const { phaseStartMap, phaseNameMap, phaseWindows, fightDur } = buildFightContext(fight);
+  const meta = await fetchMidnightMetadata(code, fight);
+  const report = meta.reportData.report;
+  const actors = report.masterData?.actors || [];
+  const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
+  const classMap = Object.fromEntries(actors.map(a => [a.id, a.subType || a.type || '']));
+  const abilities = report.masterData?.abilities || [];
+  const spellIdToName = Object.fromEntries(abilities.map(a => [a.gameID, a.name]));
+  const combatantEvents = report.combatants?.data || [];
+  const fightPlayerIds = idSet(combatantEvents.map(e => e.sourceID).filter(Boolean));
+  const deathEvents = report.deaths?.data || [];
+  const deathsByPlayer = deathTimeByPlayer(deathEvents, fight.startTime);
+  const cutoffTime = nthDeathCutoffTime(deathEvents, fight.startTime, deathCutoff, fightPlayerIds);
+
+  let damageEvents;
+  try {
+    damageEvents = await fetchAllDamageEvents(code, fight, 'DamageTaken');
+  } catch (e) {
+    const message = String(e.message || '');
+    if (!message.includes('DamageTaken') && !message.toLowerCase().includes('enum')) throw e;
+    damageEvents = await fetchAllDamageEvents(code, fight, 'DamageDone');
+  }
+
+  const trackedNames = new Set(MIDNIGHT_FALLS.trackedDamage.map(normalizeAbilityName));
+  const galvanizeName = normalizeAbilityName(MIDNIGHT_FALLS.galvanize);
+  const midnightName = normalizeAbilityName(MIDNIGHT_FALLS.midnight);
+  const starsplinterName = normalizeAbilityName(MIDNIGHT_FALLS.starsplinter);
+  const groupedDamageNames = new Set(MIDNIGHT_FALLS.groupedDamage.map(normalizeAbilityName));
+  const trackedDamage = [];
+  const repeatedDamageHits = [];
+  const galvanizeHits = [];
+  const midnightHits = [];
+  const starsplinterHits = [];
+
+  damageEvents.forEach(ev => {
+    const playerId = eventPlayerTargetId(ev, fightPlayerIds);
+    if (!playerId || (fightPlayerIds.size && !fightPlayerIds.has(playerId))) return;
+    const time = eventTime(ev, fight.startTime);
+    if (!Number.isFinite(time)) return;
+    if (time > cutoffTime) return;
+    const ability = abilityNameFor(ev, spellIdToName);
+    const normalized = normalizeAbilityName(ability);
+    const event = {
+      fightId: fight.id,
+      fightName: fight.name,
+      playerId,
+      player: actorMap[playerId] || `Actor ${playerId}`,
+      className: classMap[playerId] || '',
+      ability,
+      amount: eventAmount(ev),
+      time,
+      timestamp: fmtTime(time),
+      phase: phaseAtTime(time, phaseWindows) || 1,
+      phaseLabel: phaseTimeLabel(time, phaseWindows, phaseNameMap)
+    };
+
+    if (groupedDamageNames.has(normalized)) repeatedDamageHits.push(event);
+    else if (trackedNames.has(normalized)) trackedDamage.push(event);
+    if (normalized === starsplinterName) starsplinterHits.push(event);
+    if (normalized === galvanizeName && event.phase === MIDNIGHT_FALLS.galvanizePhase) galvanizeHits.push(event);
+    if (normalized === midnightName && event.phase === MIDNIGHT_FALLS.midnightPhase) midnightHits.push(event);
+  });
+
+  trackedDamage.push(...groupRepeatedDamageHits(repeatedDamageHits));
+  trackedDamage.push(...filterSecondaryStarsplinterHits(starsplinterHits));
+
+  const playerIds = [...fightPlayerIds];
+  const galvanizeMisses = [];
+  groupGalvanizeEvents(galvanizeHits).forEach((group, index) => {
+    if (group.time > cutoffTime) return;
+    const hitPlayerIds = new Set(group.events.map(event => event.playerId));
+    playerIds.forEach(playerId => {
+      if (!playerAliveAt(playerId, group.time, deathsByPlayer)) return;
+      if (hitPlayerIds.has(playerId)) return;
+      galvanizeMisses.push({
+        fightId: fight.id,
+        fightName: fight.name,
+        playerId,
+        player: actorMap[playerId] || `Actor ${playerId}`,
+        className: classMap[playerId] || '',
+        ability: MIDNIGHT_FALLS.galvanize,
+        amount: 0,
+        time: group.time,
+        timestamp: fmtTime(group.time),
+        phase: phaseAtTime(group.time, phaseWindows) || 1,
+        phaseLabel: phaseTimeLabel(group.time, phaseWindows, phaseNameMap),
+        occurrence: index + 1
+      });
+    });
+  });
+
+  return {
+    fight,
+    fightDur,
+    phaseNameMap,
+    phaseStartMap,
+    phaseWindows,
+    trackedDamage,
+    galvanizeHits,
+    galvanizeMisses,
+    midnightHits,
+    deathCutoff,
+    cutoffTime
+  };
+}
+
+function mergeMidnightAnalyses(analyses) {
+  const base = analyses[0];
+  return {
+    ...base,
+    fight: { ...base.fight, name: `${base.fight.name} (${analyses.length} pulls)` },
+    fightDur: analyses.reduce((sum, result) => sum + result.fightDur, 0),
+    trackedDamage: analyses.flatMap(result => result.trackedDamage),
+    galvanizeHits: analyses.flatMap(result => result.galvanizeHits),
+    galvanizeMisses: analyses.flatMap(result => result.galvanizeMisses),
+    midnightHits: analyses.flatMap(result => result.midnightHits),
+    aggregateCount: analyses.length
+  };
+}
+
 async function runMechanicCheck() {
+  await runMechanicAnalysis(false);
+}
+
+async function runAggregateMechanicCheck() {
+  await runMechanicAnalysis(true);
+}
+
+async function runMechanicAnalysis(aggregate) {
   const main = document.getElementById('mainArea');
-  main.innerHTML = '<div class="loading"><div class="spinner"></div> Fetching Midnight Falls events…</div>';
+  main.innerHTML = `<div class="loading"><div class="spinner"></div> Fetching Midnight Falls events${aggregate ? ' for matching fights' : ''}…</div>`;
 
   try {
     const url = document.getElementById('logUrl').value.trim();
@@ -479,105 +716,22 @@ async function runMechanicCheck() {
       throw new Error('Click Retrieve to load fights for this report before analyzing.');
     }
 
-    const fight = selectedFight;
-    if (normalizeAbilityName(fight.name) !== normalizeAbilityName(MIDNIGHT_FALLS.fightName)) {
-      throw new Error(`No hardcoded mechanic analyzer exists for ${fight.name}. Select a Midnight Falls pull.`);
+    if (normalizeAbilityName(selectedFight.name) !== normalizeAbilityName(MIDNIGHT_FALLS.fightName)) {
+      throw new Error(`No hardcoded mechanic analyzer exists for ${selectedFight.name}. Select a Midnight Falls pull.`);
     }
 
-    const { phaseStartMap, phaseNameMap, phaseWindows, fightDur } = buildFightContext(fight);
-    const meta = await fetchMidnightMetadata(code, fight);
-    const report = meta.reportData.report;
-    const actors = report.masterData?.actors || [];
-    const actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
-    const classMap = Object.fromEntries(actors.map(a => [a.id, a.subType || a.type || '']));
-    const abilities = report.masterData?.abilities || [];
-    const spellIdToName = Object.fromEntries(abilities.map(a => [a.gameID, a.name]));
-    const combatantEvents = report.combatants?.data || [];
-    const fightPlayerIds = idSet(combatantEvents.map(e => e.sourceID).filter(Boolean));
-    const deathsByPlayer = deathTimeByPlayer(report.deaths?.data || [], fight.startTime);
-
-    let damageEvents;
-    try {
-      damageEvents = await fetchAllDamageEvents(code, fight, 'DamageTaken');
-    } catch (e) {
-      const message = String(e.message || '');
-      if (!message.includes('DamageTaken') && !message.toLowerCase().includes('enum')) throw e;
-      damageEvents = await fetchAllDamageEvents(code, fight, 'DamageDone');
+    const deathCutoff = Math.max(0, parseInt(document.getElementById('mechanicDeathCutoff')?.value, 10) || 0);
+    const targetFights = aggregate
+      ? fights.filter(fight => normalizeAbilityName(fight.name) === normalizeAbilityName(selectedFight.name))
+      : [selectedFight];
+    const analyses = [];
+    for (const fight of targetFights) {
+      analyses.push(await analyzeMidnightFight(code, fight, deathCutoff));
     }
-
-    const trackedNames = new Set(MIDNIGHT_FALLS.trackedDamage.map(normalizeAbilityName));
-    const galvanizeName = normalizeAbilityName(MIDNIGHT_FALLS.galvanize);
-    const midnightName = normalizeAbilityName(MIDNIGHT_FALLS.midnight);
-    const starsplinterName = normalizeAbilityName(MIDNIGHT_FALLS.starsplinter);
-    const groupedDamageNames = new Set(MIDNIGHT_FALLS.groupedDamage.map(normalizeAbilityName));
-    const trackedDamage = [];
-    const repeatedDamageHits = [];
-    const galvanizeHits = [];
-    const midnightHits = [];
-    const starsplinterHits = [];
-
-    damageEvents.forEach(ev => {
-      const playerId = eventPlayerTargetId(ev, fightPlayerIds);
-      if (!playerId || (fightPlayerIds.size && !fightPlayerIds.has(playerId))) return;
-      const time = eventTime(ev, fight.startTime);
-      if (!Number.isFinite(time)) return;
-      const ability = abilityNameFor(ev, spellIdToName);
-      const normalized = normalizeAbilityName(ability);
-      const event = {
-        playerId,
-        player: actorMap[playerId] || `Actor ${playerId}`,
-        className: classMap[playerId] || '',
-        ability,
-        amount: eventAmount(ev),
-        time,
-        timestamp: fmtTime(time),
-        phase: phaseAtTime(time, phaseWindows) || 1,
-        phaseLabel: phaseTimeLabel(time, phaseWindows, phaseNameMap)
-      };
-
-      if (groupedDamageNames.has(normalized)) repeatedDamageHits.push(event);
-      else if (trackedNames.has(normalized)) trackedDamage.push(event);
-      if (normalized === starsplinterName) starsplinterHits.push(event);
-      if (normalized === galvanizeName && event.phase === MIDNIGHT_FALLS.galvanizePhase) galvanizeHits.push(event);
-      if (normalized === midnightName && event.phase === MIDNIGHT_FALLS.midnightPhase) midnightHits.push(event);
-    });
-
-    trackedDamage.push(...groupRepeatedDamageHits(repeatedDamageHits));
-    trackedDamage.push(...filterSecondaryStarsplinterHits(starsplinterHits));
-
-    const playerIds = [...fightPlayerIds];
-    const galvanizeMisses = [];
-    groupGalvanizeEvents(galvanizeHits).forEach((group, index) => {
-      const hitPlayerIds = new Set(group.events.map(event => event.playerId));
-      playerIds.forEach(playerId => {
-        if (!playerAliveAt(playerId, group.time, deathsByPlayer)) return;
-        if (hitPlayerIds.has(playerId)) return;
-        galvanizeMisses.push({
-          playerId,
-          player: actorMap[playerId] || `Actor ${playerId}`,
-          className: classMap[playerId] || '',
-          ability: MIDNIGHT_FALLS.galvanize,
-          amount: 0,
-          time: group.time,
-          timestamp: fmtTime(group.time),
-          phase: phaseAtTime(group.time, phaseWindows) || 1,
-          phaseLabel: phaseTimeLabel(group.time, phaseWindows, phaseNameMap),
-          occurrence: index + 1
-        });
-      });
-    });
-
+    const result = aggregate ? mergeMidnightAnalyses(analyses) : analyses[0];
     renderMidnightFallsResults({
-      fight,
-      fightDur,
-      phaseNameMap,
-      phaseStartMap,
-      phaseWindows,
-      trackedDamage,
-      galvanizeHits,
-      galvanizeMisses,
-      midnightHits,
-      damageSummary: aggregateDamage([...trackedDamage, ...midnightHits])
+      ...result,
+      damageSummary: aggregateDamage([...result.trackedDamage, ...result.midnightHits])
     });
   } catch(e) {
     document.getElementById('mainArea').innerHTML = `<div class="error-box">⚠ ${escHtml(e.message)}</div>`;
@@ -856,6 +1010,7 @@ function renderResults(results, fight, fightDur, tolerance, phaseNameMap = {}, p
 }
 
 function renderMidnightFallsResults(data) {
+  lastMechanicRenderData = data;
   const {
     fight,
     fightDur,
@@ -866,16 +1021,26 @@ function renderMidnightFallsResults(data) {
     galvanizeHits,
     galvanizeMisses,
     midnightHits,
-    damageSummary
+    deathCutoff,
+    cutoffTime,
+    damageSummary,
+    aggregateCount
   } = data;
+  const isAggregate = aggregateCount > 1;
   const allDamage = [...trackedDamage, ...midnightHits];
   const totalDamage = allDamage.reduce((sum, event) => sum + event.amount, 0);
   const phases = Object.keys(phaseStartMap).map(Number).sort((a, b) => phaseStartMap[a] - phaseStartMap[b]);
+  const cutoffLabel = deathCutoff
+    ? (isAggregate
+      ? `Ignoring events after death ${deathCutoff} separately for each pull.`
+      : `Ignoring events after death ${deathCutoff}${Number.isFinite(cutoffTime) ? ` at ${fmtTime(cutoffTime)}` : ''}.`)
+    : 'No death cutoff applied.';
 
   const damageRowsFor = events => events
     .sort((a, b) => a.time - b.time || a.player.localeCompare(b.player))
     .map(event => `
-      <div class="mechanic-row">
+      <div class="mechanic-row${isAggregate ? ' is-aggregate' : ''}">
+        ${isAggregate ? `<span>#${escHtml(String(event.fightId))}</span>` : ''}
         <span>${escHtml(event.timestamp)}</span>
         <span>${playerNameHtml(event)}</span>
         <span>${escHtml(event.ability)}</span>
@@ -903,7 +1068,8 @@ function renderMidnightFallsResults(data) {
       ${phase === MIDNIGHT_FALLS.galvanizePhase ? `
         <div class="mechanic-subhead">Galvanize Misses</div>
         ${phaseGalvanizeMisses.map(event => `
-        <div class="mechanic-row">
+        <div class="mechanic-row${isAggregate ? ' is-aggregate' : ''}">
+          ${isAggregate ? `<span>#${escHtml(String(event.fightId))}</span>` : ''}
           <span>${escHtml(event.timestamp)}</span>
           <span>${playerNameHtml(event)}</span>
           <span>${escHtml(event.ability)} #${event.occurrence}</span>
@@ -915,14 +1081,45 @@ function renderMidnightFallsResults(data) {
     `;
   }).join('');
 
-  const summaryRows = damageSummary.map(row => `
-    <div class="mechanic-summary-row">
-      <span>${playerNameHtml(row)}</span>
-      <span>${escHtml(row.ability)}</span>
-      <strong>${row.hits}</strong>
-      <strong>${row.damage.toLocaleString()}</strong>
+  const sortedSummary = [...damageSummary].sort((a, b) =>
+    mechanicSummarySort === 'hits'
+      ? b.hits - a.hits || b.damage - a.damage || a.player.localeCompare(b.player)
+      : b.damage - a.damage || b.hits - a.hits || a.player.localeCompare(b.player)
+  );
+  const summaryByAbility = sortedSummary.reduce((groups, row) => {
+    if (!groups.has(row.ability)) groups.set(row.ability, []);
+    groups.get(row.ability).push(row);
+    return groups;
+  }, new Map());
+  const summarySortButtons = `
+    <div class="mechanic-sort">
+      <button type="button" class="sort-btn${mechanicSummarySort === 'damage' ? ' active' : ''}" onclick="setMechanicSummarySort('damage')" aria-pressed="${mechanicSummarySort === 'damage'}">Damage</button>
+      <button type="button" class="sort-btn${mechanicSummarySort === 'hits' ? ' active' : ''}" onclick="setMechanicSummarySort('hits')" aria-pressed="${mechanicSummarySort === 'hits'}">Hits</button>
     </div>
-  `).join('');
+  `;
+  const summarySections = [...summaryByAbility.entries()].map(([ability, rows]) => {
+    const hits = rows.reduce((sum, row) => sum + row.hits, 0);
+    const damage = rows.reduce((sum, row) => sum + row.damage, 0);
+    const rowHtml = rows.map(row => `
+      <div class="mechanic-summary-row">
+        <span>${playerNameHtml(row)}</span>
+        <strong>${row.hits}</strong>
+        <strong>${row.damage.toLocaleString()}</strong>
+      </div>
+    `).join('');
+    return `
+      <div class="mechanic-summary-section">
+        <div class="mechanic-summary-title">
+          <span>${escHtml(ability)}</span>
+          <span>${hits} hit${hits === 1 ? '' : 's'} · ${damage.toLocaleString()}</span>
+        </div>
+        <div class="mechanic-summary-header">
+          <span>Player</span><span>Hits</span><span>Damage</span>
+        </div>
+        ${rowHtml}
+      </div>
+    `;
+  }).join('');
 
   const maxPhaseId = Math.max(...Object.keys(phaseStartMap).map(Number));
   const lastPhaseName = phaseNameMap[maxPhaseId]?.name;
@@ -932,7 +1129,7 @@ function renderMidnightFallsResults(data) {
   document.getElementById('mainArea').innerHTML = `
     <div class="fight-title">
       ${escHtml(fight.name)}
-      <span class="dur">${fmtTime(fight.endTime - fight.startTime)}</span>
+      <span class="dur">${isAggregate ? `${aggregateCount} pulls` : fmtTime(fight.endTime - fight.startTime)}</span>
       ${phaseReachedLabel}
     </div>
     <div class="summary-grid">
@@ -951,9 +1148,10 @@ function renderMidnightFallsResults(data) {
       <div class="results-table-wrap">
         <div class="mechanic-head">
           <h2>Midnight Falls Mechanics</h2>
-          <p>Damage taken, missed Galvanize soaks, and Midnight avoidable hits grouped by phase.</p>
+          <p>Damage taken, missed Galvanize soaks, and Midnight avoidable hits grouped by phase. ${escHtml(cutoffLabel)}</p>
         </div>
-        <div class="mechanic-header">
+        <div class="mechanic-header${isAggregate ? ' is-aggregate' : ''}">
+          ${isAggregate ? '<span>Pull</span>' : ''}
           <span>Time</span><span>Player</span><span>Ability</span><span>Damage</span><span>Phase</span>
         </div>
         ${phaseSections || '<div class="result-empty">No Midnight Falls mechanic data found.</div>'}
@@ -961,12 +1159,10 @@ function renderMidnightFallsResults(data) {
       <div class="results-table-wrap">
         <div class="mechanic-head">
           <h2>Damage Summary</h2>
-          <p>Hits and damage by player/ability</p>
+          <p>Hits and damage by player, split by ability</p>
+          ${summarySortButtons}
         </div>
-        <div class="mechanic-summary-header">
-          <span>Player</span><span>Ability</span><span>Hits</span><span>Damage</span>
-        </div>
-        ${summaryRows || '<div class="result-empty">No tracked damage.</div>'}
+        ${summarySections || '<div class="result-empty">No tracked damage.</div>'}
       </div>
     </div>`;
 }
