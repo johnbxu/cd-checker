@@ -142,7 +142,7 @@ function phaseTimeLabel(ms, phaseWindows, phaseNameMap = {}) {
 }
 
 function extractCode(url) {
-  const m = url.match(/reports\/([A-Za-z0-9]+)/);
+  const m = url.match(/reports\/(?:live\/)?([A-Za-z0-9]+)/);
   if (!m) throw new Error('Could not find a report code in that URL.');
   return m[1];
 }
@@ -315,7 +315,7 @@ function safeExtractCode(url) {
   }
 }
 
-async function fetchReport(code, fresh = false) {
+async function fetchReport(code, fresh = true) {
   const cacheKey = `report:${code}:fights:v2`;
   if (!fresh) {
     const cached = await getPersistentCache(cacheKey);
@@ -334,7 +334,7 @@ function mostRecentFight(reportFights) {
   return reportFights.reduce((latest, fight) => fight.startTime > latest.startTime ? fight : latest, reportFights[0]);
 }
 
-async function retrieveReport(fresh = false) {
+async function retrieveReport(fresh = true) {
   const url = document.getElementById('logUrl').value.trim();
   if (!url) { showError('log-error', 'Paste a WarcraftLogs report URL first.'); return; }
   clearError('log-error');
