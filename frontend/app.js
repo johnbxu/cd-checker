@@ -315,23 +315,33 @@ function safeExtractCode(url) {
   }
 }
 
-async function retrieveReport() {
+async function fetchReport(code, fresh = false) {
+  const cacheKey = `report:${code}:fights:v2`;
+  if (!fresh) {
+    const cached = await getPersistentCache(cacheKey);
+    if (cached) return cached;
+  }
+  const data = await wcl(
+    `query($code:String!){reportData{report(code:$code){title startTime phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
+    { code }
+  );
+  const report = data.reportData.report;
+  await setPersistentCache(cacheKey, report);
+  return report;
+}
+
+function mostRecentFight(reportFights) {
+  return reportFights.reduce((latest, fight) => fight.startTime > latest.startTime ? fight : latest, reportFights[0]);
+}
+
+async function retrieveReport(fresh = false) {
   const url = document.getElementById('logUrl').value.trim();
   if (!url) { showError('log-error', 'Paste a WarcraftLogs report URL first.'); return; }
   clearError('log-error');
   document.getElementById('fight-picker').style.display = 'none';
   try {
     const code = extractCode(url);
-    const cacheKey = `report:${code}:fights:v2`;
-    let report = await getPersistentCache(cacheKey);
-    if (!report) {
-      const data = await wcl(
-        `query($code:String!){reportData{report(code:$code){title startTime phases{encounterID phases{id name isIntermission}} fights(killType:All){id name startTime endTime encounterID phaseTransitions{id startTime}}}}}`,
-        { code }
-      );
-      report = data.reportData.report;
-      await setPersistentCache(cacheKey, report);
-    }
+    const report = await fetchReport(code, fresh);
     fights = report.fights;
     reportPhases = report.phases || [];
     if (!fights.length) { showError('log-error', 'No fights found in this report.'); return; }
@@ -339,7 +349,7 @@ async function retrieveReport() {
     sel.innerHTML = fights.map(f =>
       `<option value="${f.id}">${f.name} (${fmtTime(f.endTime - f.startTime)})</option>`
     ).join('');
-    selectedFight = fights[fights.length - 1];
+    selectedFight = mostRecentFight(fights);
     loadedReportCode = code;
     addRecentReport(code, url, report);
     sel.value = selectedFight.id;
@@ -348,6 +358,10 @@ async function retrieveReport() {
   } catch(e) {
     showError('log-error', e.message);
   }
+}
+
+async function retrieveLatestFight() {
+  await retrieveReport(true);
 }
 
 function loadFight() {
@@ -791,24 +805,16 @@ async function fetchMidnightMetadata(code, fight) {
     mechanicEventCache.set(cacheKey, cached);
     return cached;
   }
-  let data;
-  for (const abilityFields of ['gameID name icon', 'gameID name']) {
-    try {
-      data = await wcl(
-        `query($code:String!,$start:Float!,$end:Float!){
-          reportData{report(code:$code){
-            masterData{ actors{ id name type subType } abilities{ ${abilityFields} } }
-            combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:10000){data}
-            deaths: events(dataType:Deaths,startTime:$start,endTime:$end,limit:10000){data}
-          }}
-        }`,
-        { code, start: fight.startTime, end: fight.endTime }
-      );
-      break;
-    } catch (e) {
-      if (abilityFields === 'gameID name') throw e;
-    }
-  }
+  const data = await wcl(
+    `query($code:String!,$start:Float!,$end:Float!){
+      reportData{report(code:$code){
+        masterData{ actors{ id name type subType } abilities{ gameID name } }
+        combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:10000){data}
+        deaths: events(dataType:Deaths,startTime:$start,endTime:$end,limit:10000){data}
+      }}
+    }`,
+    { code, start: fight.startTime, end: fight.endTime }
+  );
   mechanicEventCache.set(cacheKey, data);
   await setPersistentCache(persistentKey, data);
   return data;
@@ -1167,24 +1173,16 @@ async function runCheck() {
       const filterExpr = assignmentSpellIds.length > 0
         ? `ability.id in (${assignmentSpellIds.join(',')})`
         : null;
-      let castData;
-      for (const abilityFields of ['gameID name icon', 'gameID name']) {
-        try {
-          castData = await wcl(
-            `query($code:String!,$start:Float!,$end:Float!${filterExpr ? ',$filter:String!' : ''}){
-              reportData{report(code:$code){
-                masterData{ actors{ id name } abilities{ ${abilityFields} } }
-                combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:100){data}
-                casts: events(dataType:Casts,startTime:$start,endTime:$end,limit:10000${filterExpr ? ',filterExpression:$filter' : ''}){data}
-              }}
-            }`,
-            { code, start: fight.startTime, end: fight.endTime, ...(filterExpr ? { filter: filterExpr } : {}) }
-          );
-          break;
-        } catch (e) {
-          if (abilityFields === 'gameID name') throw e;
-        }
-      }
+      const castData = await wcl(
+        `query($code:String!,$start:Float!,$end:Float!${filterExpr ? ',$filter:String!' : ''}){
+          reportData{report(code:$code){
+            masterData{ actors{ id name } abilities{ gameID name } }
+            combatants: events(dataType:CombatantInfo,startTime:$start,endTime:$end,limit:100){data}
+            casts: events(dataType:Casts,startTime:$start,endTime:$end,limit:10000${filterExpr ? ',filterExpression:$filter' : ''}){data}
+          }}
+        }`,
+        { code, start: fight.startTime, end: fight.endTime, ...(filterExpr ? { filter: filterExpr } : {}) }
+      );
       const actors = castData.reportData.report.masterData?.actors || [];
       actorMap = Object.fromEntries(actors.map(a => [a.id, a.name]));
       const abilities = castData.reportData.report.masterData?.abilities || [];
